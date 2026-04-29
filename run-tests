@@ -1,0 +1,184 @@
+#!/bin/ksh
+
+set -e
+
+DC="docker compose -f test-asgard.yml"
+CMD="$DC exec -T"
+
+#
+# XXXrcd: TMP_FILES is used deliberated unquoted---so we
+#         must ensure that no spaces exist in the files..
+TMP_FILES=
+add_tmpfile() {
+
+	TMP=$(mktemp /tmp/kdc-XXXXXX)
+	TMP_FILES="$TMP_FILES $TMP"
+	echo $TMP
+}
+
+bail() {
+
+	rm -f $TMP_FILES
+	$DC down -v --remove-orphans
+}
+
+trap bail 0
+
+#
+# provision_host() performs the basic steps to enroll a host into
+# our security environment.  Essentially, some config files, our
+# root CA, and bootstrapping our host credentials.
+
+provision_host_krb5_conf() {
+	BOX="$1"
+
+	$CMD "$BOX" /bin/sh -c "cat >/etc/krb5.conf" < $krb5_conf
+}
+
+provision_host_ca() {
+	BOX="$1"
+
+	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/ca-pub.pem' < $ca_pub
+}
+
+provision_host() {
+	BOX="$1"
+
+	provision_host_krb5_conf "$BOX"
+	provision_host_ca "$BOX"
+
+	BOOT=$($CMD "$BOX" krb5_keytab bootstrap/RANDOM)
+
+	$CMD bastion krb5_admin bind_host $BOX.example.com $BOOT
+
+	$CMD "$BOX" krb5_keytab
+}
+
+docker buildx bake
+
+$DC down -v --remove-orphans
+$DC up   -d --remove-orphans
+
+$CMD kdc1 /cmd setup-master EXAMPLE.COM
+
+#
+# XXXrcd: L4M3 sleep for race, fix later...
+sleep 5
+
+krb5_conf=$(add_tmpfile)
+ca_pub=$(add_tmpfile)
+passwd=$(add_tmpfile)
+
+$CMD kdc1 /cmd print-krb5-conf	> $krb5_conf
+$CMD kdc1 /cmd print-ca		> $ca_pub
+
+#
+# We must make an admin account.  /cmd create-admin
+# not only creates a user, but also makes them omnipotent.
+
+$CMD kdc1 /cmd create-admin admin	| \
+	sed "s,^.*'\(.*\)',\1," > $passwd
+$CMD kdc1 krb5_admin -l modify admin attributes-=needchange
+
+#
+# And, we provision a "bastion" host.  In this test, this is
+# the host on which we run administrative commands:
+
+provision_host_krb5_conf bastion
+
+echo -n Admin passwd:\ ; cat $passwd
+$CMD bastion kinit admin < $passwd
+
+#
+#
+
+provision_host kdc2
+$CMD kdc1 sh -c 'echo iprop/kdc2.example.com@EXAMPLE.COM > /var/heimdal/slaves'
+$CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com
+
+#
+# Set up our client.  We create a user called [unimaginatively]
+# ``user'' with network identity ``user@EXAMPLE.COM''.  We also
+# obtain client creds for said user to speed the tests that
+# follow.
+
+$CMD bastion krb5_admin create_user user |
+	sed "s,^.*'\(.*\)',\1," > $passwd
+$CMD bastion krb5_admin modify user attributes-=needchange
+
+provision_host client
+$CMD client kinit user < $passwd
+
+#
+# Setup and test sshserver
+
+echo "Starting to test SSH"
+
+provision_host sshserver
+
+$CMD sshserver /bin/sh -c 'cat >/etc/ssh/sshd_config.d/gss.conf' <<EOM
+GSSAPIAuthentication yes
+GSSAPICleanupCredentials yes
+GSSAPIStrictAcceptorCheck no
+GSSAPIKeyExchange yes
+EOM
+
+$CMD sshserver /bin/sh -c 'cat >/root/.k5login' <<EOM
+user@EXAMPLE.COM
+EOM
+
+$CMD sshserver /usr/sbin/sshd
+
+$CMD client ssh -ogssapiauthentication=yes -oGSSAPIKeyExchange=yes	\
+	sshserver.example.com /bin/true
+
+echo "SSH Test completed successfully"
+
+#
+# Setup and test httpserver:
+
+echo "Starting to test Web Server (nginx)"
+
+provision_host httpserver
+
+$CMD bastion krb5_admin principal_map_add www-data HTTP httpserver.example.com || /bin/true
+
+echo "Setting up the web server..."
+$CMD httpserver krb5_keytab -p www-data HTTP
+$CMD httpserver sh -c 'cat > /etc/nginx/sites-available/default' <<EOM
+server {
+    listen 80;
+    server_name httpserver.example.com;
+
+    root /var/www;
+
+    location / {
+	auth_gss on;
+	auth_gss_realm EXAMPLE.COM;
+	auth_gss_keytab /var/spool/keytabs/www-data;
+	auth_gss_service_name HTTP/httpserver.example.com;
+	auth_gss_allow_basic_fallback off;
+    }
+}
+EOM
+$CMD httpserver sh -c 'cat > /var/www/foo.txt' <<EOM
+foo
+EOM
+$CMD httpserver nginx
+echo "web server has been set up..."
+
+
+F="$($CMD client curl -s --negotiate http://httpserver.example.com/foo.txt)"
+
+if [ "$F" != foo ]; then
+	echo Web server did not return \'foo\' as configured
+	echo Rather, it returned "$F"
+sleep infinity
+	exit 1
+fi
+
+echo Web server returned \'foo\' as configured.
+
+echo "Web Server test completed successfully"
+
+$DC up

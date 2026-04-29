@@ -1,0 +1,269 @@
+#!/bin/sh
+
+SETUP_FILE=/var/heimdal/setup.done
+
+usage() {
+
+	( echo "$@"
+	  echo
+	  echo "usage:"
+	  echo "  docker run create-admin <USER>"
+	  echo "  docker run print-ca"
+	  echo "  docker run print-krb5-conf"
+	  echo "  docker run setup-master <REALM>"
+	  echo "  docker run setup-slave <REALM>"
+	  echo "  docker run shell"
+	  echo "  docker run start-kdc"
+	) 1>&2
+	exit 1
+}
+
+emit_cmd() {
+
+	echo "---- $@"
+	"$@"
+}
+
+emit_file() {
+
+	echo "---- $1"
+	cat "$1"
+}
+
+emit_config() {
+
+	echo ------------------------------------------------------------
+	emit_cmd set
+	emit_cmd ls -l /etc
+	emit_file /etc/krb5.conf
+	emit_cmd ls -l /etc/krb5
+	emit_cmd ls -l /var/heimdal
+	emit_cmd kadmin -l list \*
+	echo ------------------------------------------------------------
+}
+
+prepare() {
+
+	[ $debug -gt 0 ]	&& emit_config
+
+	mkdir -p /var/heimdal
+
+	#
+	# XXXrcd: for now, wait until we are setup---this is a hack,
+	#         later this will be done in a better way as we'll
+	#         have to listen for setup...
+
+	while [ ! -f "$SETUP_FILE" ]; do
+		sleep 1;
+	done
+
+	cp /var/heimdal/ca-pub.pem /etc/krb5
+	ln -sf ../var/heimdal/krb5.conf /etc/krb5.conf
+}
+
+mk_krb5_conf() {
+	REALM="$(cat /var/heimdal/realm)"
+	MASTER="$(cat /var/heimdal/master)"
+
+	[ "$1" = master ] && MASTER=127.0.0.1
+
+	cat <<EOM
+[libdefaults]
+	default_realm = $REALM
+	rdns = false
+	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
+
+[realms]
+	$REALM = {
+		kdc = $MASTER
+		kpasswd_server = $MASTER
+	}
+EOM
+
+	if [ "$1" != master -a "$1" != slave ]; then
+		return
+	fi
+
+	cat <<EOM
+[kdc]
+	database = {
+		dbname = db:/var/heimdal/heimdal.db
+	}
+	require-preauth = yes
+	check-ticket-addresses = false
+	enable-pkinit = yes
+	allow-anonymous = yes
+	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
+	pkinit_identity = FILE:/var/heimdal/kdc-priv.pem
+
+	enable-kx509 = yes
+
+[logging]
+	kdc = 0-3/SYSLOG
+EOM
+
+}
+
+create_admin() {
+
+	[ $# -ne 1 ]	&& usage "create-user takes exactly one argument"
+
+	krb5_admin -l create_user "$@"
+	krb5_admin -l create_subject "$@"@EXAMPLE.COM type=krb5
+	krb5_admin -l sacls_add bind_host "$@"@EXAMPLE.COM
+	krb5_admin -l sacls_add create_user "$@"@EXAMPLE.COM
+	krb5_admin -l sacls_add create_subject "$@"@EXAMPLE.COM
+	krb5_admin -l sacls_add modify "$@"@EXAMPLE.COM
+	krb5_admin -l sacls_add principal_map_add "$@"@EXAMPLE.COM
+}
+
+print_ca() {
+
+	[ $# -gt 0 ]	&& usage "print-ca takes zero arguments"
+
+	[ -f "$SETUP_FILE" ] || usage "KDC is not setup yet"
+
+	cat /var/heimdal/ca-pub.pem
+}
+
+print_krb5_conf() {
+
+	[ $# -gt 0 ]	&& usage "print-krb5-conf takes zero arguments"
+
+	[ -f "$SETUP_FILE" ] || usage "KDC is not setup yet"
+
+	mk_krb5_conf client
+}
+
+start_kdc() {
+
+	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
+
+	prepare
+	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
+}
+
+shell() {
+
+	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
+
+	prepare
+	exec /bin/ksh -i
+}
+
+setup_master() {
+	REALM="$1"
+
+	echo Setting up KDC for REALM=$REALM
+
+	# XXXrcd: this is a short term solution, eventually we will
+	#         done something via bifrost only
+
+	# XXXrcd: validate REALM
+
+	cd /var/heimdal
+
+	[ -f "$SETUP_FILE" ] && usage "Realm is already setup, exiting..."
+
+	echo "$REALM"	> /var/heimdal/realm
+	hostname	> /var/heimdal/master
+
+	mk_krb5_conf master > /var/heimdal/krb5.conf
+
+	kadmin -l init --realm-max-ticket-life=1d			\
+		       --realm-max-renewable-life=1w			\
+							"$REALM"
+
+	krb5_admin -l init_db
+
+	hxtool issue-certificate					\
+			--self-signed					\
+			--issue-ca					\
+			--generate-key=rsa				\
+			--subject="CN=CA,DC=example,DC=com"		\
+			--lifetime=20years				\
+			--certificate="FILE:ca-priv.pem"
+
+	hxtool cc --no-private-keys ca-priv.pem ca-pub.pem
+
+	# XXXrcd: DC=example,DC=com is not correct...
+	hxtool issue-certificate					\
+			--ca-certificate=FILE:ca-priv.pem		\
+			--generate-key=rsa				\
+			--type="pkinit-kdc"				\
+			--pk-init-principal="krbtgt/$REALM@$REALM"	\
+			--subject="uid=kdc,DC=example,DC=com"		\
+			--certificate="FILE:kdc-priv.pem"
+
+	hxtool cc --no-private-keys kdc-priv.pem kdc-pub.pem
+
+	krb5_keytab -Z
+	krb5_keytab -Z krb5_admin
+	krb5_keytab -Z iprop
+	krb5_admin -l master > /etc/krb5/master
+
+	touch "$SETUP_FILE"
+}
+
+setup_slave() {
+	REALM="$1"
+	MASTER="$2"
+
+	echo Setting up subservient KDC for REALM=$REALM
+
+	[ -z "$REALM" ]  && usage "needs two args, REALM and MASTER"     
+	[ -z "$MASTER" ] && usage "needs two args, REALM and MASTER"     
+
+	echo "$REALM"	> /var/heimdal/realm
+	echo "$MASTER"	> /var/heimdal/master
+
+	mk_krb5_conf slave > /var/heimdal/krb5.conf
+
+	krb5_keytab iprop
+
+	touch "$SETUP_FILE"
+}
+
+
+debug=0
+done=0
+
+args=`getopt d $*`	|| usage
+
+set -- $args
+while [ $# -gt 0 ]; do
+	case "$1" in
+		-d)	debug=$(expr $debug + 1)	;;
+		--)	done=1				;;
+	esac
+	shift
+	[ "$done" = 1 ] && break
+done
+
+if [ $debug -gt 0 ]; then
+	export KRB5_TRACE=0-$(expr $debug + 3)/SYSLOG
+fi
+
+if [ $# -eq 0 ]; then
+	usage "We require at least one argument"
+fi
+
+CMD="$1"
+shift
+
+CMD=$(echo "$CMD" | sed s/_/-/g)
+
+#
+# XXXrcd:
+#		add cmds: get_krb5_conf, get_ca...
+
+case "$CMD" in
+	create-admin)		create_admin "$@"		;;
+	print-ca)		print_ca "$@"			;;
+	print-krb5-conf)	print_krb5_conf "$@"		;;
+	setup-master)		setup_master "$@"		;;
+	setup-slave)		setup_slave "$@"		;;
+	shell)			shell "$@"			;;
+	start-kdc)		start_kdc "$@"			;;
+	*)			usage "unrecognised: $CMD"	;;
+esac

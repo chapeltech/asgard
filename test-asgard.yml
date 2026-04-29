@@ -1,0 +1,44 @@
+services:
+  kdc1:
+    image: asgard/kdc
+    hostname: kdc1.example.com
+    command: start-kdc
+
+  kdc2:
+    image: asgard/kdc
+    hostname: kdc2.example.com
+    command: start-kdc
+  #
+  # This is the host on which the administrator
+  # will be running commands:
+  bastion:
+    image: asgard/client
+    hostname: bastion.example.com
+    command:
+    - sleep infinity
+
+  #
+  # This host will run a web server that accepts
+  # krb5 connections...
+  httpserver:
+    image: asgard/client
+    hostname: httpserver.example.com
+    command:
+    - sleep infinity
+
+  #
+  # This host will run a web server that accepts
+  # krb5 connections...
+  sshserver:
+    image: asgard/client
+    hostname: sshserver.example.com
+    command:
+    - sleep infinity
+
+  #
+  # This host will be a client for our tests
+  client:
+    image: asgard/client
+    hostname: client.example.com
+    command:
+    - sleep infinity

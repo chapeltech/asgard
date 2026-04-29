@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+
+%:
+	dh $*
+
+
+override_dh_auto_configure:
+	./configure $(shell dpkg-buildflags --export=configure | sed 's/-Werror=implicit-function-declaration//') \
+	  --disable-silent-rules		\
+	  --libexecdir="\$${prefix}/sbin"	\
+	  --enable-shared			\
+	  --prefix=/usr				\
+	  --includedir="\$${prefix}/include"	\
+	  --with-openldap=/usr			\
+	  --with-sqlite3=/usr			\
+	  --with-libedit=/usr			\
+	  --with-openssl=/usr			\
+	  --infodir="\$${prefix}/share/info"	\
+	  --disable-heimdal-documentation	\
+	  --disable-dependency-tracking		\
+	  --disable-afs-string-to-key		\
+	  --without-krb4

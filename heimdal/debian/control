@@ -1,0 +1,29 @@
+Source: heimdal
+Section: net
+Priority: optional
+Maintainer: Roland C. Dowdeswell <roland@chapeltech.uk>
+Homepage: http://www.h5l.org/
+Standards-Version: 4.1.2
+Build-Depends:	dpkg-dev,
+		debhelper,
+		bison,
+		flex,
+		libcrypt-dev,
+		libdb-dev,
+		libedit-dev,
+		libjson-perl,
+		libncurses-dev,
+		libsqlite3-dev,
+		netbase,
+		pkgconf,
+		python3,
+		unzip
+
+Package: heimdal
+Architecture: any
+Depends: debconf (>= 0.5.00) | debconf-2.0,
+         ${misc:Depends},
+         ${shlibs:Depends}
+Description: Heimdal Kerberos
+ Heimdal is a free implementation of Kerberos 5 that aims to be
+ compatible with MIT Kerberos.

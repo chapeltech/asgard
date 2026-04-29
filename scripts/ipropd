@@ -1,0 +1,9 @@
+#!/bin/sh
+
+MASTER="$(cat /etc/krb5/master)"
+
+if [ "$(hostname)" = "$MASTER" ]; then
+	ipropd-master
+else
+	ipropd-slave -k FILE:/etc/krb5.keytab "$MASTER"
+fi
