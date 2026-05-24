@@ -8,6 +8,11 @@ for test in							\
     /tests/admin-subjects.sh					\
     /tests/admin-hosts.sh					\
     /tests/admin-sacls.sh					\
+    /tests/admin-features.sh					\
+    /tests/admin-principal-map.sh				\
+    /tests/admin-tickets.sh					\
+    /tests/admin-owners.sh					\
+    /tests/admin-concurrency.sh				\
     /tests/bifrost-parity.sh
 do
 	echo

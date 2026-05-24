@@ -83,13 +83,14 @@ $CMD kdc1 krb5_admin -l modify admin attributes-=needchange
 for verb in							\
 	add_acl add_label bind_host create create_appid create_group	\
 	create_host create_logical_host create_subject create_user	\
-	del_label disable enable insert_hostmap insert_ticket list	\
-	list_labels mquery modify modify_group modify_host		\
-	modify_subject						\
-	principal_map_add query query_acl query_aclgroup query_group	\
-	query_host query_hostmap query_subject query_ticket remove	\
-	remove_group remove_host remove_subject remove_ticket		\
-	sacls_add sacls_del sacls_query
+	add_feature del_feature del_label disable enable has_feature	\
+	insert_hostmap insert_ticket list list_labels mquery modify	\
+	modify_group modify_host modify_subject principal_map_add	\
+	principal_map_query principal_map_remove query query_acl		\
+	query_acl_owner query_aclgroup query_group query_host		\
+	query_host_owner query_hostmap query_subject query_ticket	\
+	refresh_ticket remove remove_group remove_host remove_hostmap	\
+	remove_subject remove_ticket sacls_add sacls_del sacls_query
 do
 	$CMD kdc1 krb5_admin -l sacls_add "$verb" admin@EXAMPLE.COM	\
 	    || /bin/true

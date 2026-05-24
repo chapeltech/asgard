@@ -116,14 +116,28 @@ json_field_eq() {
 json_filter_true() {
 	name=$1
 	file=$2
-	filter=$3
+	shift 2
 
-	if jq -e "$filter" "$file" >/dev/null; then
+	if jq -e "$@" "$file" >/dev/null; then
 		pass "$name"
 	else
-		printf 'filter did not match: %s\n' "$filter" >&2
+		printf 'filter did not match: %s\n' "$*" >&2
 		jq -S . "$file" >&2
 		fail "$name"
+	fi
+}
+
+json_filter_false() {
+	name=$1
+	file=$2
+	shift 2
+
+	if jq -e "$@" "$file" >/dev/null; then
+		printf 'filter unexpectedly matched: %s\n' "$*" >&2
+		jq -S . "$file" >&2
+		fail "$name"
+	else
+		pass "$name"
 	fi
 }
 
@@ -244,6 +258,28 @@ admin_json() {
 
 bifrost_json() {
 	bifrost -J "$@"
+}
+
+create_user_password() {
+	principal=$1
+
+	bifrost create_user "$principal" | sed "s,^.*'\(.*\)',\1,"
+}
+
+kinit_ccache() {
+	principal=$1
+	password=$2
+	ccache=$3
+
+	printf '%s\n' "$password" | env KRB5CCNAME="FILE:$ccache" \
+	    kinit "$principal"
+}
+
+bifrost_ccache() {
+	ccache=$1
+	shift
+
+	env KRB5CCNAME="FILE:$ccache" bifrost "$@"
 }
 
 bifrost_http() {

@@ -1,22 +1,23 @@
 Source test                  Shell coverage             Status
 00prepare.t                  run-tests setup            partial
 appid.t                      admin-appids.sh            partial
-features.t                   pending                    not CLI enough yet
-getkdc.t                     pending                    not CLI enough yet
-getrealm.t                   pending                    not CLI enough yet
+curve25519.t                 pending                    C helper only
+features.t                   admin-features.sh          covered
+getkdc.t                     pending                    C helper only
+getrealm.t                   pending                    C helper only
 keytabs.t                    existing host/keytab tests partial
 kmdb_hosts.t                 admin-hosts.sh             partial
-kmdb_hosts_locking.t         pending                    concurrency later
+kmdb_hosts_locking.t         admin-concurrency.sh       partial
 kmdb_princs.t                admin-principals.sh        partial
 krb5_host.t                  existing host tests        partial
-locking.t                    pending                    concurrency later
-mint_ticket.t                pending                    host flow later
-owners.t                     pending                    authz expansion later
-parse_name.t                 skipped                    library parser test
+locking.t                    admin-concurrency.sh       partial
+mint_ticket.t                admin-tickets.sh           partial
+owners.t                     admin-owners.sh            partial
+parse_name.t                 skipped                    C parser helper only
 principals.t                 admin-principals.sh        partial
-regress-lockstarvation.t     pending                    concurrency later
+regress-lockstarvation.t     pending                    long-lived RPC lock
 sacls.t                      admin-sacls.sh             partial
-self_service.t               pending                    host flow later
+self_service.t               admin-principal-map.sh     partial
 subjects.t                   admin-subjects.sh          partial
 tests/test_kmdb              admin-principals.sh        partial
 
