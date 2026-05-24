@@ -23,6 +23,7 @@ RUN apt update -qq && \
 	perl libjson-perl			\
         curl					\
         ca-certificates				\
+	rustup					\
         git					\
         wget					\
         gnupg					\
@@ -38,6 +39,8 @@ COPY heimdal /heimdal
 RUN    cd /heimdal && dpkg-buildpackage
 
 RUN dpkg -i heimdal_7.99.1_amd64.deb
+
+RUN    /usr/bin/rustup toolchain install 1.86.0 --profile minimal
 
 RUN    git clone https://github.com/elric1/prefork	\
     && cd prefork					\
@@ -67,7 +70,7 @@ RUN dpkg -i knc*deb
 RUN apt -y --no-install-recommends install mksh
 
 RUN    git clone https://github.com/elric1/krb5_admin	\
-    && echo krb5_admin 5000/tcp >> /etc/services	\
+    && echo krb5_admin 3666/tcp >> /etc/services	\
     && cd krb5_admin					\
     && git checkout experiment				\
     && dpkg-buildpackage
@@ -78,6 +81,11 @@ RUN    git clone https://github.com/elric1/krb5_keytab	\
     && cd krb5_keytab					\
     && dpkg-buildpackage
 
+COPY --from=bifrost . /bifrost
+
+RUN    cd /bifrost					\
+    && /usr/bin/rustup run 1.86.0 cargo build --release
+
 RUN    mkdir pkgs					\
     && mv *.deb pkgs
 
@@ -86,6 +94,7 @@ ENTRYPOINT ["/bin/ksh"]
 FROM debian:trixie-slim AS kdc
 
 COPY --from=packages /pkgs /pkgs
+COPY --from=packages /bifrost/target/release/bifrost /usr/bin/bifrost
 
 RUN apt update -qq					\
     && apt install -y --no-install-recommends		\
@@ -106,17 +115,20 @@ COPY scripts/cmd /cmd
 
 RUN    ln -sf /var/heimdal/master /etc/krb5		\
     && ln -sf heimdal /var/kerberos			\
-    && echo krb5_admin 2666/tcp >> /etc/services
+    && echo bifrost 2666/tcp >> /etc/services		\
+    && echo krb5_admin 3666/tcp >> /etc/services
 
 ENTRYPOINT ["/cmd"]
 
 FROM debian:trixie-slim AS client
 
 COPY --from=packages /pkgs /pkgs
+COPY --from=packages /bifrost/target/release/bifrost /usr/bin/bifrost
 
 RUN apt update -qq					\
     && apt install -y --no-install-recommends		\
 	coreutils mksh nvi procps			\
+	jq						\
 	nginx libnginx-mod-http-auth-spnego		\
 	curl openssh-server openssh-client		\
     && cd /pkgs						\
@@ -124,8 +136,10 @@ RUN apt update -qq					\
     && apt --fix-broken -y install
 
 COPY etc /etc
+COPY tests /tests
 COPY scripts/cmd /cmd
 
-RUN    echo krb5_admin 2666/tcp >> /etc/services
+RUN    echo bifrost 2666/tcp >> /etc/services		\
+    && echo krb5_admin 3666/tcp >> /etc/services
 
 ENTRYPOINT ["/bin/sh", "-c"]

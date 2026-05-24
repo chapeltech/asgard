@@ -54,7 +54,7 @@ provision_host() {
 	$CMD "$BOX" krb5_keytab
 }
 
-docker buildx bake
+docker buildx bake --allow=fs.read=../bifrost
 
 $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
@@ -80,6 +80,21 @@ $CMD kdc1 /cmd create-admin admin	| \
 	sed "s,^.*'\(.*\)',\1," > $passwd
 $CMD kdc1 krb5_admin -l modify admin attributes-=needchange
 
+for verb in							\
+	add_acl add_label bind_host create create_appid create_group	\
+	create_host create_logical_host create_subject create_user	\
+	del_label disable enable insert_hostmap insert_ticket list	\
+	list_labels mquery modify modify_group modify_host		\
+	modify_subject						\
+	principal_map_add query query_acl query_aclgroup query_group	\
+	query_host query_hostmap query_subject query_ticket remove	\
+	remove_group remove_host remove_subject remove_ticket		\
+	sacls_add sacls_del sacls_query
+do
+	$CMD kdc1 krb5_admin -l sacls_add "$verb" admin@EXAMPLE.COM	\
+	    || /bin/true
+done
+
 #
 # And, we provision a "bastion" host.  In this test, this is
 # the host on which we run administrative commands:
@@ -95,6 +110,10 @@ $CMD bastion kinit admin < $passwd
 provision_host kdc2
 $CMD kdc1 sh -c 'echo iprop/kdc2.example.com@EXAMPLE.COM > /var/heimdal/slaves'
 $CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com
+
+echo "Starting bifrost and krb5_admin remote admin tests"
+$CMD bastion /bin/sh /tests/run.sh
+echo "bifrost and krb5_admin remote admin tests completed successfully"
 
 #
 # Set up our client.  We create a user called [unimaginatively]
@@ -141,7 +160,8 @@ echo "Starting to test Web Server (nginx)"
 
 provision_host httpserver
 
-$CMD bastion krb5_admin principal_map_add www-data HTTP httpserver.example.com || /bin/true
+$CMD bastion krb5_admin principal_map_add www-data HTTP		\
+	httpserver.example.com || /bin/true
 
 echo "Setting up the web server..."
 $CMD httpserver krb5_keytab -p www-data HTTP
@@ -181,4 +201,6 @@ echo Web server returned \'foo\' as configured.
 
 echo "Web Server test completed successfully"
 
-$DC up
+if [ "${ASGARD_ATTACH:-}" = 1 ]; then
+	$DC up
+fi

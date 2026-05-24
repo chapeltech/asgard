@@ -1,0 +1,24 @@
+Source test                  Shell coverage             Status
+00prepare.t                  run-tests setup            partial
+appid.t                      admin-appids.sh            partial
+features.t                   pending                    not CLI enough yet
+getkdc.t                     pending                    not CLI enough yet
+getrealm.t                   pending                    not CLI enough yet
+keytabs.t                    existing host/keytab tests partial
+kmdb_hosts.t                 admin-hosts.sh             partial
+kmdb_hosts_locking.t         pending                    concurrency later
+kmdb_princs.t                admin-principals.sh        partial
+krb5_host.t                  existing host tests        partial
+locking.t                    pending                    concurrency later
+mint_ticket.t                pending                    host flow later
+owners.t                     pending                    authz expansion later
+parse_name.t                 skipped                    library parser test
+principals.t                 admin-principals.sh        partial
+regress-lockstarvation.t     pending                    concurrency later
+sacls.t                      admin-sacls.sh             partial
+self_service.t               pending                    host flow later
+subjects.t                   admin-subjects.sh          partial
+tests/test_kmdb              admin-principals.sh        partial
+
+Native bifrost QUERY parity is covered for users and appids.  Native
+POST write parity is pending authz integration for write RPCs.

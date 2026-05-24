@@ -3,7 +3,7 @@ services:
     image: asgard/kdc
     hostname: kdc.example.com
     command: start-kdc
-    ports: ["88/udp", "88/tcp", "464/tcp", "2666/tcp"]
+    ports: ["88/udp", "88/tcp", "464/tcp", "2666/tcp", "3666/tcp"]
     # In production, we'll have a persistent volume:
 #    volumes:
 #      - kdc1:/var/heimdal
