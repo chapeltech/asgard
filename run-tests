@@ -156,6 +156,23 @@ normalise_client_json() {
 	    < "$RAW" > "$OUT"
 }
 
+normalise_ticket_json() {
+	HOST="$1"
+	RAW="$2"
+	OUT="$3"
+
+	$CMD bastion jq -S --arg host "$HOST" '
+	    walk(
+		if type == "string" then
+		    gsub($host; "HOST")
+		elif type == "object" then
+		    del(.atime, .ctime, .mtime, .size)
+		else
+		    .
+		end
+	    )' < "$RAW" > "$OUT"
+}
+
 normalised_client_command() {
 	BOX="$1"
 	OUT="$2"
@@ -209,6 +226,24 @@ normalised_remote_host_command() {
 	normalise_client_json "$HOST" "$RAW" "$OUT"
 }
 
+normalised_remote_ticket_query() {
+	HOST="$1"
+	OUT="$2"
+	RAW=$(add_tmpfile)
+
+	$CMD bastion krb5_host -J -h "$HOST" query_ticket www-data > "$RAW"
+	normalise_ticket_json "$HOST" "$RAW" "$OUT"
+}
+
+normalised_admin_ticket_query() {
+	HOST="$1"
+	OUT="$2"
+	RAW=$(add_tmpfile)
+
+	$CMD bastion bifrost -J query_ticket host "$HOST" > "$RAW"
+	normalise_client_json "$HOST" "$RAW" "$OUT"
+}
+
 compare_client_host_queries() {
 	KRB5_HOST="$1.example.com"
 	BIFROST_HOST="$2.example.com"
@@ -228,6 +263,76 @@ compare_client_host_queries() {
 	echo "host database records differ between provisioning paths" 1>&2
 	cat "$DIFF" 1>&2
 	exit 1
+}
+
+compare_client_ticket_records() {
+	KRB5_HOST="$1.example.com"
+	BIFROST_HOST="$2.example.com"
+	KRB5_JSON=$(add_tmpfile)
+	BIFROST_JSON=$(add_tmpfile)
+	DIFF=$(add_tmpfile)
+
+	echo "Comparing prestashed ticket database records"
+
+	normalised_admin_ticket_query "$KRB5_HOST" "$KRB5_JSON"
+	normalised_admin_ticket_query "$BIFROST_HOST" "$BIFROST_JSON"
+
+	if diff -u "$KRB5_JSON" "$BIFROST_JSON" > "$DIFF"; then
+		return
+	fi
+
+	echo "ticket database records differ between provisioning paths" 1>&2
+	cat "$DIFF" 1>&2
+	exit 1
+}
+
+compare_client_installed_tickets() {
+	KRB5_HOST="$1.example.com"
+	BIFROST_HOST="$2.example.com"
+	KRB5_JSON=$(add_tmpfile)
+	BIFROST_JSON=$(add_tmpfile)
+	DIFF=$(add_tmpfile)
+
+	echo "Comparing installed prestashed tickets"
+
+	normalised_remote_ticket_query "$KRB5_HOST" "$KRB5_JSON"
+	normalised_remote_ticket_query "$BIFROST_HOST" "$BIFROST_JSON"
+
+	if diff -u "$KRB5_JSON" "$BIFROST_JSON" > "$DIFF"; then
+		return
+	fi
+
+	echo "installed tickets differ between provisioning paths" 1>&2
+	cat "$DIFF" 1>&2
+	exit 1
+}
+
+install_client_prestashed_ticket() {
+	BOX="$1"
+
+	$CMD "$BOX" krb5_prestash fetch EXAMPLE.COM
+	$CMD "$BOX" test -f /var/spool/tickets/www-data
+	$CMD "$BOX" su -s /bin/sh -c \
+	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
+}
+
+compare_client_prestashed_tickets() {
+	KRB5_BOX=client-krb5
+	BIFROST_BOX=client-bifrost
+	PRINC=www-data@EXAMPLE.COM
+
+	echo "Comparing prestashed ticket delivery"
+
+	ensure_www_data_appid
+	$CMD bastion bifrost insert_ticket "$PRINC" \
+	    "$KRB5_BOX.example.com"
+	$CMD bastion bifrost insert_ticket "$PRINC" \
+	    "$BIFROST_BOX.example.com"
+
+	compare_client_ticket_records "$KRB5_BOX" "$BIFROST_BOX"
+	install_client_prestashed_ticket "$KRB5_BOX"
+	install_client_prestashed_ticket "$BIFROST_BOX"
+	compare_client_installed_tickets "$KRB5_BOX" "$BIFROST_BOX"
 }
 
 compare_client_remote_keytabs() {
@@ -266,6 +371,17 @@ compare_test_clients() {
 	    env "$HOSTD_ENV" bifrost -J host list_keytab root
 	compare_client_host_queries "$KRB5_BOX" "$BIFROST_BOX"
 	compare_client_remote_keytabs "$KRB5_BOX" "$BIFROST_BOX"
+	compare_client_prestashed_tickets
+}
+
+ensure_www_data_appid() {
+
+	if $CMD bastion bifrost -J query www-data@EXAMPLE.COM \
+	    >/dev/null 2>&1; then
+		return
+	fi
+
+	$CMD bastion bifrost create_appid www-data
 }
 
 test_prestashed_tickets() {
@@ -274,8 +390,7 @@ test_prestashed_tickets() {
 
 	echo "Testing prestashed ticket delivery to $BOX"
 
-	$CMD bastion bifrost create_appid www-data	\
-	    || /bin/true
+	ensure_www_data_appid
 	$CMD bastion bifrost insert_ticket "$PRINC"	\
 	    "$BOX.example.com" || /bin/true
 	$CMD bastion bifrost -J query_ticket principal \
