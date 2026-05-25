@@ -98,7 +98,7 @@ COPY --from=packages /bifrost/target/release/bifrost /usr/bin/bifrost
 
 RUN apt update -qq					\
     && apt install -y --no-install-recommends		\
-	coreutils mksh nvi				\
+	ca-certificates coreutils mksh nvi		\
 	supervisor tini					\
 	openbsd-inetd					\
 	inetutils-syslogd				\
@@ -127,7 +127,7 @@ COPY --from=packages /bifrost/target/release/bifrost /usr/bin/bifrost
 
 RUN apt update -qq					\
     && apt install -y --no-install-recommends		\
-	coreutils mksh nvi procps			\
+	ca-certificates coreutils mksh nvi procps	\
 	supervisor tini					\
 	openbsd-inetd					\
 	inetutils-syslogd				\
