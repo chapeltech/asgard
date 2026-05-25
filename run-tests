@@ -309,8 +309,18 @@ compare_client_installed_tickets() {
 
 install_client_prestashed_ticket() {
 	BOX="$1"
+	HOSTD_ENV=BIFROST_HOSTD_SOCKET=/run/bifrost/hostd.sock
 
-	$CMD "$BOX" krb5_prestash fetch EXAMPLE.COM
+	case "$BOX" in
+	client-bifrost)
+		$CMD "$BOX" env "$HOSTD_ENV" bifrost host fetch_tickets \
+		    EXAMPLE.COM
+		;;
+	*)
+		$CMD "$BOX" krb5_prestash fetch EXAMPLE.COM
+		;;
+	esac
+
 	$CMD "$BOX" test -f /var/spool/tickets/www-data
 	$CMD "$BOX" su -s /bin/sh -c \
 	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
