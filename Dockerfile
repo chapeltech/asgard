@@ -128,6 +128,9 @@ COPY --from=packages /bifrost/target/release/bifrost /usr/bin/bifrost
 RUN apt update -qq					\
     && apt install -y --no-install-recommends		\
 	coreutils mksh nvi procps			\
+	supervisor tini					\
+	openbsd-inetd					\
+	inetutils-syslogd				\
 	jq						\
 	nginx libnginx-mod-http-auth-spnego		\
 	curl openssh-server openssh-client		\
@@ -137,9 +140,10 @@ RUN apt update -qq					\
 
 COPY etc /etc
 COPY tests /tests
+COPY scripts /scripts
 COPY scripts/cmd /cmd
 
-RUN    echo bifrost 2666/tcp >> /etc/services		\
-    && echo krb5_admin 3666/tcp >> /etc/services
+RUN echo bifrost 2666/tcp >> /etc/services
+RUN echo krb5_admin 3666/tcp >> /etc/services
 
-ENTRYPOINT ["/bin/sh", "-c"]
+ENTRYPOINT ["/cmd"]

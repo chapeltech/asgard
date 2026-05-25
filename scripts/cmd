@@ -14,6 +14,7 @@ usage() {
 	  echo "  docker run setup-slave <REALM>"
 	  echo "  docker run shell"
 	  echo "  docker run start-kdc"
+	  echo "  docker run start-client"
 	) 1>&2
 	exit 1
 }
@@ -143,6 +144,15 @@ start_kdc() {
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }
 
+start_client() {
+
+	[ $# -gt 0 ]	&& usage "start_client takes zero arguments"
+
+	mkdir -p /run/bifrost /var/spool/tickets
+	exec /usr/bin/tini -- /usr/bin/supervisord \
+	    -c /etc/client-supervisord.conf
+}
+
 shell() {
 
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
@@ -265,5 +275,6 @@ case "$CMD" in
 	setup-slave)		setup_slave "$@"		;;
 	shell)			shell "$@"			;;
 	start-kdc)		start_kdc "$@"			;;
+	start-client)		start_client "$@"			;;
 	*)			usage "unrecognised: $CMD"	;;
 esac

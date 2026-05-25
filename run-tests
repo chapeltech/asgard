@@ -17,12 +17,18 @@ add_tmpfile() {
 }
 
 bail() {
+	STATUS=$?
 
 	rm -f $TMP_FILES
+	if [ $STATUS -ne 0 ] && [ "${ASGARD_KEEP_ON_FAIL:-}" = 1 ]; then
+		exit $STATUS
+	fi
 	$DC down -v --remove-orphans
+	exit $STATUS
 }
 
 trap bail 0
+
 
 #
 # provision_host() performs the basic steps to enroll a host into
@@ -41,6 +47,20 @@ provision_host_ca() {
 	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/ca-pub.pem' < $ca_pub
 }
 
+provision_host_hostd_conf() {
+	BOX="$1"
+
+	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/krb5_hostd.conf' <<'EOM'
+do "/etc/krb5/krb5_keytab.conf" or die $@ || $!;
+$tixdir = ["/var/spool/tickets"];
+$use_fetch = 1;
+1;
+EOM
+
+	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/krb5_admind.conf' \
+	    </dev/null
+}
+
 provision_host() {
 	BOX="$1"
 
@@ -49,9 +69,222 @@ provision_host() {
 
 	BOOT=$($CMD "$BOX" krb5_keytab bootstrap/RANDOM)
 
-	$CMD bastion krb5_admin bind_host $BOX.example.com $BOOT
+	$CMD bastion krb5_admin bind_host		\
+	    $BOX.example.com $BOOT
 
 	$CMD "$BOX" krb5_keytab
+}
+
+provision_host_bifrost() {
+	BOX="$1"
+
+	provision_host_krb5_conf "$BOX"
+	provision_host_ca "$BOX"
+
+	BOOT=$($CMD "$BOX" bifrost keytab bootstrap/RANDOM)
+
+	$CMD bastion bifrost bind_host			\
+	    $BOX.example.com $BOOT
+
+	$CMD "$BOX" bifrost keytab
+	provision_host_hostd_conf "$BOX"
+}
+
+wait_for_socket() {
+	BOX="$1"
+	SOCK="$2"
+
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		$CMD "$BOX" test -S "$SOCK" && return
+		sleep 1
+	done
+
+	echo "$BOX: $SOCK did not appear" 1>&2
+	exit 1
+}
+
+wait_for_host_services() {
+	BOX="$1"
+
+	wait_for_socket "$BOX" /run/krb5_hostd
+	wait_for_socket "$BOX" /run/bifrost/hostd.sock
+}
+
+expect_krb5_host_show_krb5_conf() {
+	BOX="$1"
+	HOST="$2"
+	OUT=$(add_tmpfile)
+
+	if $CMD "$BOX" krb5_host -h "$HOST" show_krb5_conf > $OUT; then
+		:
+	else
+		RC=$?
+		[ $RC -eq 1 ] || exit $RC
+	fi
+
+	grep '^/etc/krb5.conf' $OUT >/dev/null
+}
+
+test_bifrost_host_cli() {
+	BOX="$1"
+	HOST="$BOX.example.com"
+	HOSTD_ENV=BIFROST_HOSTD_SOCKET=/run/bifrost/hostd.sock
+
+	echo "Testing bifrost host CLI on $BOX"
+
+	wait_for_host_services "$BOX"
+
+	$CMD "$BOX" bifrost -l host show_krb5_conf >/dev/null
+	$CMD "$BOX" bifrost -l host list_keytab root >/dev/null
+
+	$CMD "$BOX" env "$HOSTD_ENV" bifrost host show_krb5_conf \
+	    >/dev/null
+	$CMD "$BOX" env "$HOSTD_ENV" bifrost host list_keytab root \
+	    >/dev/null
+
+	expect_krb5_host_show_krb5_conf bastion "$HOST"
+	$CMD bastion krb5_host -h "$HOST" list_keytab root >/dev/null
+}
+
+normalise_client_json() {
+	HOST="$1"
+	RAW="$2"
+	OUT="$3"
+
+	$CMD bastion jq -S --arg host "$HOST" \
+	    'walk(if type == "string" then gsub($host; "HOST") else . end)' \
+	    < "$RAW" > "$OUT"
+}
+
+normalised_client_command() {
+	BOX="$1"
+	OUT="$2"
+	shift 2
+	HOST="$BOX.example.com"
+	RAW=$(add_tmpfile)
+
+	$CMD "$BOX" "$@" > "$RAW"
+	normalise_client_json "$HOST" "$RAW" "$OUT"
+}
+
+compare_client_command() {
+	NAME="$1"
+	KRB5_BOX="$2"
+	BIFROST_BOX="$3"
+	shift 3
+	KRB5_JSON=$(add_tmpfile)
+	BIFROST_JSON=$(add_tmpfile)
+	DIFF=$(add_tmpfile)
+
+	echo "Comparing $NAME"
+
+	normalised_client_command "$KRB5_BOX" "$KRB5_JSON" "$@"
+	normalised_client_command "$BIFROST_BOX" "$BIFROST_JSON" "$@"
+
+	if diff -u "$KRB5_JSON" "$BIFROST_JSON" > "$DIFF"; then
+		return
+	fi
+
+	echo "$NAME differs between client provisioning paths" 1>&2
+	cat "$DIFF" 1>&2
+	exit 1
+}
+
+normalised_admin_host_query() {
+	HOST="$1"
+	OUT="$2"
+	RAW=$(add_tmpfile)
+
+	$CMD bastion bifrost -J query_host "$HOST" > "$RAW"
+	normalise_client_json "$HOST" "$RAW" "$OUT"
+}
+
+normalised_remote_host_command() {
+	HOST="$1"
+	OUT="$2"
+	shift 2
+	RAW=$(add_tmpfile)
+
+	$CMD bastion krb5_host -J -h "$HOST" "$@" > "$RAW"
+	normalise_client_json "$HOST" "$RAW" "$OUT"
+}
+
+compare_client_host_queries() {
+	KRB5_HOST="$1.example.com"
+	BIFROST_HOST="$2.example.com"
+	KRB5_JSON=$(add_tmpfile)
+	BIFROST_JSON=$(add_tmpfile)
+	DIFF=$(add_tmpfile)
+
+	echo "Comparing host database records"
+
+	normalised_admin_host_query "$KRB5_HOST" "$KRB5_JSON"
+	normalised_admin_host_query "$BIFROST_HOST" "$BIFROST_JSON"
+
+	if diff -u "$KRB5_JSON" "$BIFROST_JSON" > "$DIFF"; then
+		return
+	fi
+
+	echo "host database records differ between provisioning paths" 1>&2
+	cat "$DIFF" 1>&2
+	exit 1
+}
+
+compare_client_remote_keytabs() {
+	KRB5_HOST="$1.example.com"
+	BIFROST_HOST="$2.example.com"
+	KRB5_JSON=$(add_tmpfile)
+	BIFROST_JSON=$(add_tmpfile)
+	DIFF=$(add_tmpfile)
+
+	echo "Comparing remote krb5_host keytab output"
+
+	normalised_remote_host_command "$KRB5_HOST" "$KRB5_JSON" \
+	    list_keytab root
+	normalised_remote_host_command "$BIFROST_HOST" "$BIFROST_JSON" \
+	    list_keytab root
+
+	if diff -u "$KRB5_JSON" "$BIFROST_JSON" > "$DIFF"; then
+		return
+	fi
+
+	echo "remote keytab output differs between provisioning paths" 1>&2
+	cat "$DIFF" 1>&2
+	exit 1
+}
+
+compare_test_clients() {
+	KRB5_BOX=client-krb5
+	BIFROST_BOX=client-bifrost
+	HOSTD_ENV=BIFROST_HOSTD_SOCKET=/run/bifrost/hostd.sock
+
+	compare_client_command "local bifrost root keytab"	\
+	    "$KRB5_BOX" "$BIFROST_BOX"			\
+	    bifrost -J -l host list_keytab root
+	compare_client_command "bifrost hostd root keytab"	\
+	    "$KRB5_BOX" "$BIFROST_BOX"			\
+	    env "$HOSTD_ENV" bifrost -J host list_keytab root
+	compare_client_host_queries "$KRB5_BOX" "$BIFROST_BOX"
+	compare_client_remote_keytabs "$KRB5_BOX" "$BIFROST_BOX"
+}
+
+test_prestashed_tickets() {
+	BOX="$1"
+	PRINC=www-data@EXAMPLE.COM
+
+	echo "Testing prestashed ticket delivery to $BOX"
+
+	$CMD bastion bifrost create_appid www-data	\
+	    || /bin/true
+	$CMD bastion bifrost insert_ticket "$PRINC"	\
+	    "$BOX.example.com" || /bin/true
+	$CMD bastion bifrost -J query_ticket principal \
+	    "$PRINC" >/dev/null
+
+	$CMD "$BOX" krb5_prestash fetch EXAMPLE.COM
+	$CMD "$BOX" test -f /var/spool/tickets/www-data
+	$CMD "$BOX" su -s /bin/sh -c \
+	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
 }
 
 docker buildx bake --allow=fs.read=../bifrost
@@ -124,10 +357,20 @@ echo "bifrost and krb5_admin remote admin tests completed successfully"
 
 $CMD bastion krb5_admin create_user user |
 	sed "s,^.*'\(.*\)',\1," > $passwd
-$CMD bastion krb5_admin modify user attributes-=needchange
+$CMD bastion krb5_admin modify user		\
+    attributes-=needchange
 
-provision_host client
-$CMD client kinit user < $passwd
+provision_host client-krb5
+provision_host_hostd_conf client-krb5
+test_bifrost_host_cli client-krb5
+
+provision_host_bifrost client-bifrost
+test_bifrost_host_cli client-bifrost
+
+compare_test_clients
+
+$CMD client-krb5 kinit user < $passwd
+$CMD client-bifrost kinit user < $passwd
 
 #
 # Setup and test sshserver
@@ -135,6 +378,8 @@ $CMD client kinit user < $passwd
 echo "Starting to test SSH"
 
 provision_host sshserver
+provision_host_hostd_conf sshserver
+test_bifrost_host_cli sshserver
 
 $CMD sshserver /bin/sh -c 'cat >/etc/ssh/sshd_config.d/gss.conf' <<EOM
 GSSAPIAuthentication yes
@@ -149,7 +394,9 @@ EOM
 
 $CMD sshserver /usr/sbin/sshd
 
-$CMD client ssh -ogssapiauthentication=yes -oGSSAPIKeyExchange=yes	\
+$CMD client-krb5 ssh -ogssapiauthentication=yes -oGSSAPIKeyExchange=yes \
+	sshserver.example.com /bin/true
+$CMD client-bifrost ssh -ogssapiauthentication=yes -oGSSAPIKeyExchange=yes \
 	sshserver.example.com /bin/true
 
 echo "SSH Test completed successfully"
@@ -160,12 +407,16 @@ echo "SSH Test completed successfully"
 echo "Starting to test Web Server (nginx)"
 
 provision_host httpserver
+provision_host_hostd_conf httpserver
+test_bifrost_host_cli httpserver
 
-$CMD bastion krb5_admin principal_map_add www-data HTTP		\
+$CMD bastion krb5_admin principal_map_add www-data HTTP \
 	httpserver.example.com || /bin/true
 
 echo "Setting up the web server..."
 $CMD httpserver krb5_keytab -p www-data HTTP
+$CMD httpserver bifrost -l host list_keytab www-data >/dev/null
+test_prestashed_tickets httpserver
 $CMD httpserver sh -c 'cat > /etc/nginx/sites-available/default' <<EOM
 server {
     listen 80;
@@ -189,16 +440,19 @@ $CMD httpserver nginx
 echo "web server has been set up..."
 
 
-F="$($CMD client curl -s --negotiate http://httpserver.example.com/foo.txt)"
+for BOX in client-krb5 client-bifrost; do
+	F="$($CMD "$BOX" curl -s --negotiate \
+	    http://httpserver.example.com/foo.txt)"
 
-if [ "$F" != foo ]; then
-	echo Web server did not return \'foo\' as configured
-	echo Rather, it returned "$F"
-sleep infinity
-	exit 1
-fi
+	if [ "$F" != foo ]; then
+		echo "$BOX: web server did not return 'foo' as configured"
+		echo Rather, it returned "$F"
+		sleep infinity
+		exit 1
+	fi
 
-echo Web server returned \'foo\' as configured.
+	echo "$BOX: web server returned 'foo' as configured."
+done
 
 echo "Web Server test completed successfully"
 

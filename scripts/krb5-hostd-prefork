@@ -1,0 +1,28 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Getopt::Std;
+use Sys::Syslog;
+
+use Krb5Admin::Krb5Host::Daemon;
+use Krb5Admin::Utils qw/load_krb5hostd_config/;
+
+our $KRB5_KEYTAB_CONFIG = "/etc/krb5/krb5_hostd.conf";
+
+openlog("krb5_hostd", "pid", "auth");
+
+my %opts;
+getopts("c:v", \%opts) or die "Usage: krb5-hostd-prefork [-c conf]\n";
+
+my %config;
+$config{config} = $KRB5_KEYTAB_CONFIG;
+$config{config} = $opts{c} if defined($opts{c});
+$config{config_provided} = defined($opts{c});
+$config{verbose} = 1 if exists($opts{v});
+
+load_krb5hostd_config(\%config);
+$config{preforked} = 1;
+
+Krb5Admin::Krb5Host::Daemon::run(\%config);

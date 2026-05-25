@@ -14,8 +14,7 @@ services:
   bastion:
     image: asgard/client
     hostname: bastion.example.com
-    command:
-    - sleep infinity
+    command: start-client
 
   #
   # This host will run a web server that accepts
@@ -23,8 +22,7 @@ services:
   httpserver:
     image: asgard/client
     hostname: httpserver.example.com
-    command:
-    - sleep infinity
+    command: start-client
 
   #
   # This host will run a web server that accepts
@@ -32,13 +30,18 @@ services:
   sshserver:
     image: asgard/client
     hostname: sshserver.example.com
-    command:
-    - sleep infinity
+    command: start-client
 
   #
-  # This host will be a client for our tests
-  client:
+  # These hosts are otherwise identical clients.  The test harness
+  # provisions one with krb5_admin/krb5_keytab and the other with bifrost,
+  # then compares the resulting host state.
+  client-krb5:
     image: asgard/client
-    hostname: client.example.com
-    command:
-    - sleep infinity
+    hostname: client-krb5.example.com
+    command: start-client
+
+  client-bifrost:
+    image: asgard/client
+    hostname: client-bifrost.example.com
+    command: start-client

@@ -81,6 +81,11 @@ json_cmd() {
 		cat "$raw" >&2
 		fail "parse json for $*"
 	fi
+
+	if [ ! -s "$out" ]; then
+		printf 'empty json from: %s\n' "$*" >&2
+		fail "create json for $*"
+	fi
 }
 
 json_eq_files() {
