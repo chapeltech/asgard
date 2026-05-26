@@ -97,7 +97,28 @@ EOM
 	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
 	pkinit_identity = FILE:/var/heimdal/kdc-priv.pem
 
-	enable-kx509 = yes
+	enable_kx509 = yes
+
+	realms = {
+		$REALM = {
+			kx509 = {
+				user = {
+					include_pkinit_san = true
+					subject_name = CN=\${principal-name-without-realm},DC=example,DC=com
+					ekus = 1.3.6.1.5.5.7.3.2
+					ca = FILE:/var/heimdal/kdc-priv.pem
+				}
+				hostbased_service = {
+					HTTP = {
+						include_dnsname_san = true
+						subject_name = CN=\${principal-host-name},DC=example,DC=com
+						ekus = 1.3.6.1.5.5.7.3.1
+						ca = FILE:/var/heimdal/kdc-priv.pem
+					}
+				}
+			}
+		}
+	}
 
 [logging]
 	kdc = 0-3/SYSLOG
@@ -148,7 +169,7 @@ start_client() {
 
 	[ $# -gt 0 ]	&& usage "start_client takes zero arguments"
 
-	mkdir -p /run/bifrost /var/spool/tickets
+	mkdir -p /run/bifrost /var/spool/tickets /var/spool/certs
 	exec /usr/bin/tini -- /usr/bin/supervisord \
 	    -c /etc/client-supervisord.conf
 }
@@ -200,7 +221,12 @@ setup_master() {
 	hxtool issue-certificate					\
 			--ca-certificate=FILE:ca-priv.pem		\
 			--generate-key=rsa				\
+			--issue-ca					\
+			--path-length=0				\
 			--type="pkinit-kdc"				\
+			--ku=keyEncipherment				\
+			--ku=digitalSignature				\
+			--ku=keyCertSign				\
 			--pk-init-principal="krbtgt/$REALM@$REALM"	\
 			--subject="uid=kdc,DC=example,DC=com"		\
 			--certificate="FILE:kdc-priv.pem"

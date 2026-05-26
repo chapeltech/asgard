@@ -146,6 +146,28 @@ test_bifrost_host_cli() {
 	$CMD bastion krb5_host -h "$HOST" list_keytab root >/dev/null
 }
 
+test_kx509_certificate() {
+	BOX="$1"
+	PRINC="$2"
+	CN="$3"
+	STORE="/tmp/kx509-$CN.pem"
+	PRINT=$(add_tmpfile)
+
+	echo "Testing kx509 certificate issuance for $PRINC on $BOX"
+
+	$CMD "$BOX" rm -f "$STORE"
+	$CMD "$BOX" heimtools kx509 -s
+	$CMD "$BOX" heimtools kx509 -o "PEM-FILE:$STORE"
+	$CMD "$BOX" test -s "$STORE"
+	$CMD "$BOX" hxtool print "PEM-FILE:$STORE" > "$PRINT"
+
+	grep "CN=$CN" "$PRINT" >/dev/null
+
+	$CMD "$BOX" kdestroy
+	$CMD "$BOX" kinit -C "PEM-FILE:$STORE" "$PRINC"
+	$CMD "$BOX" klist >/dev/null
+}
+
 normalise_client_json() {
 	HOST="$1"
 	RAW="$2"
@@ -324,6 +346,13 @@ install_client_prestashed_ticket() {
 	$CMD "$BOX" test -f /var/spool/tickets/www-data
 	$CMD "$BOX" su -s /bin/sh -c \
 	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
+
+	if [ "$BOX" = client-bifrost ]; then
+		$CMD "$BOX" test -f /var/spool/certs/www-data
+		$CMD "$BOX" su -s /bin/sh -c \
+		    'kinit -C PEM-FILE:/var/spool/certs/www-data \
+		    www-data@EXAMPLE.COM && klist >/dev/null' www-data
+	fi
 }
 
 compare_client_prestashed_tickets() {
@@ -459,9 +488,11 @@ done
 # the host on which we run administrative commands:
 
 provision_host_krb5_conf bastion
+provision_host_ca bastion
 
 echo -n Admin passwd:\ ; cat $passwd
 $CMD bastion kinit admin < $passwd
+test_kx509_certificate bastion admin@EXAMPLE.COM admin
 
 #
 #
@@ -496,6 +527,8 @@ compare_test_clients
 
 $CMD client-krb5 kinit user < $passwd
 $CMD client-bifrost kinit user < $passwd
+test_kx509_certificate client-krb5 user@EXAMPLE.COM user
+test_kx509_certificate client-bifrost user@EXAMPLE.COM user
 
 #
 # Setup and test sshserver
