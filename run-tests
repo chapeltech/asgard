@@ -6,20 +6,24 @@ RED_HAT=1
 RED_HAT_BUILD=1
 KEEP_ON_FAIL=0
 ATTACH=0
+DNS=0
+DNSSEC=0
 
 usage() {
 
 	cat >&2 <<'EOM'
-usage: run-tests [-a] [-k] [-B] [-R]
+usage: run-tests [-a] [-k] [-B] [-R] [-D] [-S]
 
   -a  attach to the compose stack after tests complete
   -k  keep the compose stack on failure
   -B  skip building the Red Hat package image
   -R  skip the Red Hat package-image hosts and tests
+  -D  enable KDC-hosted authoritative DNS
+  -S  enable DNSSEC tests; implies -D
 EOM
 }
 
-OPTS=$(getopt -o '+akBRh' -- "$@") || {
+OPTS=$(getopt -o '+akBRDSh' -- "$@") || {
 	usage
 	exit 2
 }
@@ -43,6 +47,15 @@ while true; do
 		RED_HAT=0
 		shift
 		;;
+	-D)
+		DNS=1
+		shift
+		;;
+	-S)
+		DNS=1
+		DNSSEC=1
+		shift
+		;;
 	-h)
 		usage
 		exit 0
@@ -61,6 +74,9 @@ if [ $# -ne 0 ]; then
 fi
 
 COMPOSE_FILES="-f test-asgard.yml"
+if [ "$DNS" = 1 ]; then
+	COMPOSE_FILES="$COMPOSE_FILES -f test-asgard-dns.yml"
+fi
 
 if [ "$RED_HAT" = 1 ]; then
 	COMPOSE_PROFILES="--profile redhat"
@@ -1106,6 +1122,132 @@ grep '^slot=hour.00$' /var/heimdal/snaps/day.1/manifest >/dev/null
 EOM
 }
 
+dns_host() {
+	HOST="$1"
+	ADDR="$2"
+
+	if ! $CMD kdc1 krb5_admin -l query_host "$HOST.example.com" |
+	    grep '^realm:' >/dev/null; then
+		$CMD kdc1 krb5_admin -l create_host "$HOST.example.com" \
+		    realm=EXAMPLE.COM ip_addr="$ADDR"
+	else
+		$CMD kdc1 krb5_admin -l modify_host "$HOST.example.com" \
+		    ip_addr="$ADDR"
+	fi
+}
+
+wait_for_dns() {
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		if $CMD kdc1 dig @127.0.0.1 example.com SOA +short |
+		    grep 'kdc1.example.com.' >/dev/null; then
+			return
+		fi
+		sleep 1
+	done
+
+	echo "NSD did not start serving example.com" 1>&2
+	exit 1
+}
+
+setup_asgard_dns() {
+	[ "$DNS" = 1 ] || return 0
+
+	echo "Setting up bifrost-managed DNS"
+
+	dns_host kdc1		172.30.0.11
+	dns_host kdc2		172.30.0.12
+	dns_host bastion	172.30.0.20
+	dns_host httpserver	172.30.0.21
+	dns_host sshserver	172.30.0.22
+	dns_host client-krb5	172.30.0.23
+	dns_host client-bifrost	172.30.0.24
+	dns_host mail		172.30.0.27
+
+	if [ "$RED_HAT" = 1 ]; then
+		dns_host redhat-krb5	172.30.0.25
+		dns_host redhat-bifrost	172.30.0.26
+	fi
+
+	$CMD kdc1 bifrost -l modify_realm EXAMPLE.COM \
+	    kdc+=kdc1.example.com master=kdc1.example.com
+	if $CMD kdc1 bifrost -l query_domain example.com >/dev/null 2>&1; then
+		$CMD kdc1 bifrost -l modify_domain example.com \
+		    nameserver+=kdc1.example.com
+	else
+		$CMD kdc1 bifrost -l create_domain example.com \
+		    realm=EXAMPLE.COM nameserver+=kdc1.example.com
+	fi
+	$CMD kdc1 bifrost -l modify_domain example.com \
+	    mta+=mail.example.com:10 \
+	    dmarc_policy=reject \
+	    dmarc_rua=mailto:dmarc@example.com
+
+	wait_for_dns
+}
+
+test_asgard_dns() {
+	[ "$DNS" = 1 ] || return 0
+
+	echo "Testing bifrost-managed DNS"
+
+	$CMD bastion dig @172.30.0.11 +short kdc1.example.com A | \
+	    grep '^172\.30\.0\.11$' >/dev/null
+	$CMD bastion dig @172.30.0.11 +short httpserver.example.com A | \
+	    grep '^172\.30\.0\.21$' >/dev/null
+	$CMD bastion dig @172.30.0.11 +short mail.example.com A | \
+	    grep '^172\.30\.0\.27$' >/dev/null
+	$CMD bastion dig @172.30.0.11 +short _kerberos._udp.example.com SRV | \
+	    grep 'kdc1.example.com.' >/dev/null
+	$CMD bastion dig @172.30.0.11 +short example.com MX | \
+	    grep '10 mail.example.com.' >/dev/null
+	$CMD bastion dig @172.30.0.11 +short example.com TXT | \
+	    grep '"v=spf1 mx -all"' >/dev/null
+	$CMD bastion dig @172.30.0.11 +short _dmarc.example.com TXT | \
+	    grep '"v=DMARC1; p=reject; rua=mailto:dmarc@example.com"' \
+	    >/dev/null
+	$CMD bastion dig @172.30.0.11 +short example.com DNSKEY | \
+	    grep '^257 3 13 ' >/dev/null
+	$CMD bastion dig @172.30.0.11 +dnssec example.com DNSKEY | \
+	    grep '[[:space:]]RRSIG[[:space:]]DNSKEY[[:space:]]' >/dev/null
+	$CMD bastion dig @172.30.0.11 +dnssec missing.example.com A | \
+	    grep '[[:space:]]NSEC[[:space:]]' >/dev/null
+
+	if [ "$DNSSEC" = 1 ]; then
+		$CMD kdc1 bifrost -l query_domain example.com | \
+		    grep '^dnssec_ksk_ds_sha256:' >/dev/null
+		$CMD kdc1 bifrost -l modify_domain example.com \
+		    ksk+=ECDSAP256SHA256:RANDOM
+		COUNT=$($CMD kdc1 bifrost -l query_domain example.com | \
+		    grep -c '^dnssec_ksk_dnskey:')
+		[ "$COUNT" -ge 2 ]
+		COUNT=$($CMD bastion dig @172.30.0.11 +short example.com DNSKEY | \
+		    grep -c '^257 3 13 ')
+		[ "$COUNT" -ge 2 ]
+		$CMD kdc1 bifrost -l list_actions \
+		    action_type=check_dnssec_ksk_rollover \
+		    target_name=example.com | \
+		    grep 'parent DS.*not visible' >/dev/null
+	fi
+	$CMD kdc1 bifrost -l list_actions \
+	    action_type=publish_dns_domain target_name=example.com | \
+	    grep 'publish_dns_domain.*dns_domain.*example.com.*done' \
+	    >/dev/null
+
+	$CMD bastion /bin/sh -c 'cat >/tmp/krb5-dns.conf' <<'EOM'
+[libdefaults]
+	default_realm = EXAMPLE.COM
+	rdns = false
+	dns_lookup_kdc = true
+	pkinit_anchors = FILE:/etc/krb5/ca-pub.pem
+EOM
+	$CMD bastion env KRB5_CONFIG=/tmp/krb5-dns.conf \
+	    KRB5CCNAME=FILE:/tmp/dns-discovery.ccache \
+	    kinit admin < $passwd
+	$CMD bastion env KRB5_CONFIG=/tmp/krb5-dns.conf \
+	    KRB5CCNAME=FILE:/tmp/dns-discovery.ccache \
+	    klist >/dev/null
+}
+
 /bin/sh tests/asgard-create-slave.sh ./asgard-create-slave
 /bin/sh tests/cmd-keytabs.sh ./scripts/cmd
 
@@ -1149,6 +1291,7 @@ $CMD kdc1 /cmd create-admin admin	| \
 	sed "s,^.*'\(.*\)',\1," > $passwd
 $CMD kdc1 krb5_admin -l modify admin attributes-=needchange
 test_snapshot_rotation_after_admin
+setup_asgard_dns
 
 for verb in							\
 	add_acl add_label bind_host create create_appid create_group	\
@@ -1175,6 +1318,7 @@ provision_host_ca bastion
 
 echo -n Admin passwd:\ ; cat $passwd
 $CMD bastion kinit admin < $passwd
+test_asgard_dns
 test_kx509_certificate bastion admin@EXAMPLE.COM admin
 test_bifrost_tls bastion /tmp/kx509-admin.pem
 
