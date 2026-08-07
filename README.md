@@ -62,6 +62,27 @@ docker compose exec kdc /cmd setup-master EXAMPLE.COM
 
 The container starts its services after initialization completes.
 
+## Set Up a Slave
+
+On the new KDC host, obtain administrative Kerberos credentials for the realm
+and run:
+
+```sh
+asgard-create-slave EXAMPLE.COM
+```
+
+The command discovers the master, downloads the realm CA over the authenticated
+`krb5_admin` connection, creates `docker-compose.yml`, enrolls the host, and
+starts the slave. The local fully qualified hostname is used by default; pass
+it as the second positional argument when it must be overridden:
+
+```sh
+asgard-create-slave EXAMPLE.COM slave.example.com
+```
+
+The generated Compose project uses the published image, host networking, a
+persistent `/var/heimdal` volume, and `restart: unless-stopped`.
+
 ## Create an Admin Principal
 
 ```sh
