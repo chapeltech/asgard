@@ -177,6 +177,17 @@ EOM
 	    </dev/null
 }
 
+configure_gssapi_sshd() {
+	BOX="$1"
+
+	$CMD "$BOX" /bin/sh -c 'cat >/etc/ssh/sshd_config.d/gss.conf' <<'EOM'
+GSSAPIAuthentication yes
+GSSAPICleanupCredentials yes
+GSSAPIStrictAcceptorCheck no
+GSSAPIKeyExchange yes
+EOM
+}
+
 provision_redhat_services() {
 	BOX="$1"
 
@@ -447,6 +458,153 @@ test_bifrost_host_cli() {
 
 	expect_krb5_host_show_krb5_conf bastion "$HOST"
 	$CMD bastion krb5_host -h "$HOST" list_keytab root >/dev/null
+}
+
+container_host_ip() {
+	LOOKUP_BOX="$1"
+	HOST="$2"
+	IP=$($CMD "$LOOKUP_BOX" getent hosts "$HOST" |
+	    awk 'NR == 1 { print $1; exit }')
+
+	if [ -z "$IP" ]; then
+		echo "$LOOKUP_BOX: could not resolve $HOST" 1>&2
+		exit 1
+	fi
+
+	echo "$IP"
+}
+
+set_cluster_hosts_entry() {
+	BOX="$1"
+	HOST="$2"
+	ADDR="$3"
+
+	$CMD "$BOX" /bin/sh -s <<EOM
+set -e
+TMP=\$(mktemp)
+awk -v cluster="$HOST" '
+{
+	keep = 1
+	for (i = 2; i <= NF; i++) {
+		if (\$i == cluster) {
+			keep = 0
+		}
+	}
+	if (keep) {
+		print
+	}
+}' /etc/hosts > "\$TMP"
+printf '%s %s\n' "$ADDR" "$HOST" >> "\$TMP"
+cat "\$TMP" > /etc/hosts
+rm -f "\$TMP"
+getent hosts "$HOST" | grep "^$ADDR[[:space:]]" >/dev/null
+EOM
+}
+
+configure_cluster_ssh_member() {
+	BOX="$1"
+	CLUSTER="$2"
+	PRINC="host/$CLUSTER@EXAMPLE.COM"
+
+	configure_gssapi_sshd "$BOX"
+	$CMD "$BOX" /bin/sh -c 'cat >/root/.k5login' <<EOM
+user@EXAMPLE.COM
+EOM
+
+	$CMD "$BOX" bifrost keytab -p root list | grep "$PRINC" >/dev/null
+	$CMD "$BOX" /usr/sbin/sshd
+}
+
+install_cluster_ssh_keytabs() {
+	CLUSTER="$1"
+	PRINC="host/$CLUSTER@EXAMPLE.COM"
+	FIRST=$(add_tmpfile)
+	SECOND=$(add_tmpfile)
+
+	for BOX in sshcluster-a sshcluster-b; do
+		$CMD "$BOX" krb5_keytab "$PRINC"
+		$CMD "$BOX" bifrost keytab -p root list |
+		    grep "$PRINC" >/dev/null
+	done
+
+	for BOX in sshcluster-a sshcluster-b; do
+		OUT="$FIRST"
+		[ "$BOX" = sshcluster-b ] && OUT="$SECOND"
+		$CMD "$BOX" bifrost keytab -p root list -K "$PRINC" |
+		    awk -v princ="$PRINC" '
+		    $3 == princ { print $1, $2, $4 }' | sort > "$OUT"
+		test -s "$OUT"
+	done
+	diff -u "$FIRST" "$SECOND"
+}
+
+test_cluster_ssh_backend() {
+	CLUSTER="$1"
+	MEMBER="$2"
+	MEMBER_HOST="$MEMBER.example.com"
+	ADDR=$(container_host_ip client-krb5 "$MEMBER_HOST")
+
+	echo "Testing SSH cluster hostname $CLUSTER on $MEMBER_HOST"
+
+	for BOX in client-krb5 client-bifrost; do
+		set_cluster_hosts_entry "$BOX" "$CLUSTER" "$ADDR"
+		REMOTE=$($CMD "$BOX" ssh				\
+		    -oGSSAPIAuthentication=yes			\
+		    -oGSSAPIKeyExchange=yes			\
+		    -oGSSAPITrustDNS=no				\
+		    -oStrictHostKeyChecking=no			\
+		    -oUserKnownHostsFile=/dev/null		\
+		    "$CLUSTER" /bin/hostname)
+		if [ "$REMOTE" != "$MEMBER_HOST" ]; then
+			echo "$BOX: ssh to $CLUSTER reached $REMOTE, expected $MEMBER_HOST" 1>&2
+			exit 1
+		fi
+	done
+}
+
+test_cluster_ssh() {
+	CLUSTER=sshcluster.example.com
+	MEMBER_A=sshcluster-a.example.com
+	MEMBER_B=sshcluster-b.example.com
+
+	echo "Starting clustered SSH keytab test"
+
+	provision_host sshcluster-a
+	provision_host_hostd_conf sshcluster-a
+	test_bifrost_host_cli sshcluster-a
+
+	provision_host_bifrost sshcluster-b
+	test_bifrost_host_cli sshcluster-b
+
+	$CMD bastion bifrost create_logical_host "$CLUSTER" || /bin/true
+	$CMD bastion bifrost insert_hostmap "$CLUSTER" "$MEMBER_A" || /bin/true
+	$CMD bastion bifrost insert_hostmap "$CLUSTER" "$MEMBER_B" || /bin/true
+	$CMD bastion /bin/sh -s <<EOM
+set -e
+bifrost -J query_hostmap "$CLUSTER" |
+    jq -e --arg a "$MEMBER_A" --arg b "$MEMBER_B" \
+	    'index(\$a) and index(\$b)' >/dev/null
+EOM
+
+	install_cluster_ssh_keytabs "$CLUSTER"
+	configure_cluster_ssh_member sshcluster-a "$CLUSTER"
+	configure_cluster_ssh_member sshcluster-b "$CLUSTER"
+
+	test_cluster_ssh_backend "$CLUSTER" sshcluster-a
+	test_cluster_ssh_backend "$CLUSTER" sshcluster-b
+
+	ensure_www_data_appid
+	remove_prestashed_material sshcluster-a www-data
+	remove_prestashed_material sshcluster-b www-data
+	if ! $CMD bastion krb5_admin insert_ticket \
+	    www-data@EXAMPLE.COM "$CLUSTER"; then
+		$CMD bastion krb5_admin refresh_ticket \
+		    www-data@EXAMPLE.COM "$CLUSTER"
+	fi
+	wait_for_prestashed_material sshcluster-a www-data
+	wait_for_prestashed_material sshcluster-b www-data
+
+	echo "Clustered host key and prestash delivery test completed successfully"
 }
 
 test_kx509_certificate() {
@@ -1383,13 +1541,7 @@ provision_host sshserver
 provision_host_hostd_conf sshserver
 test_bifrost_host_cli sshserver
 
-$CMD sshserver /bin/sh -c 'cat >/etc/ssh/sshd_config.d/gss.conf' <<EOM
-GSSAPIAuthentication yes
-GSSAPICleanupCredentials yes
-GSSAPIStrictAcceptorCheck no
-GSSAPIKeyExchange yes
-EOM
-
+configure_gssapi_sshd sshserver
 $CMD sshserver /bin/sh -c 'cat >/root/.k5login' <<EOM
 user@EXAMPLE.COM
 EOM
@@ -1402,6 +1554,8 @@ $CMD client-bifrost ssh -ogssapiauthentication=yes -oGSSAPIKeyExchange=yes \
 	sshserver.example.com /bin/true
 
 echo "SSH Test completed successfully"
+
+test_cluster_ssh
 
 #
 # Setup and test httpserver:
