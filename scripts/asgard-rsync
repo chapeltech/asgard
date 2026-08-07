@@ -1,0 +1,21 @@
+#!/bin/sh
+
+set -eu
+
+MASTER=$(cat /var/heimdal/master)
+CREDS=${KNC_CREDS-}
+AUTHORIZED=0
+
+while IFS= read -r realm; do
+	if [ "$CREDS" = "iprop/$MASTER@$realm" ]; then
+		AUTHORIZED=1
+		break
+	fi
+done < /var/heimdal/realms
+
+if [ "$AUTHORIZED" != 1 ]; then
+	echo "asgard-rsync: $CREDS is not authorized" >&2
+	exit 1
+fi
+
+exec /usr/bin/rsync --server --daemon --config=/etc/rsyncd.conf .
