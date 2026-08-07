@@ -47,6 +47,22 @@ provision_host_ca() {
 	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/ca-pub.pem' < $ca_pub
 }
 
+print_direct_krb5_conf() {
+	BOX="$1"
+	REALM="$2"
+	KDC="$3"
+
+	$CMD "$BOX" /cmd print-krb5-conf
+	cat <<EOM
+
+[realms]
+	$REALM = {
+		kdc = $KDC
+		kpasswd_server = $KDC
+	}
+EOM
+}
+
 provision_host_hostd_conf() {
 	BOX="$1"
 
@@ -108,6 +124,53 @@ wait_for_host_services() {
 
 	wait_for_socket "$BOX" /run/krb5_hostd
 	wait_for_socket "$BOX" /run/bifrost/hostd.sock
+}
+
+test_bifrost_switch() {
+	typeset CONF PASS
+
+	echo "Testing Asgard with Bifrost disabled"
+
+	if docker run --rm -e ASGARD_BIFROST=invalid asgard/kdc \
+	    start-kdc >/dev/null 2>&1; then
+		echo "start-kdc accepted an invalid ASGARD_BIFROST value" >&2
+		exit 1
+	fi
+
+	$CMD kdc-no-bifrost /cmd setup-master EXAMPLE.COM
+
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		$CMD kdc-no-bifrost test -s /run/asgard/inetd.conf && break
+		sleep 1
+	done
+	$CMD kdc-no-bifrost test -s /run/asgard/inetd.conf
+	$CMD kdc-no-bifrost /bin/sh -c \
+	    '! grep -q "^bifrost[[:space:]]" /run/asgard/inetd.conf'
+	$CMD kdc-no-bifrost /bin/sh -c \
+	    'grep -q "^krb5_admin[[:space:]]" /run/asgard/inetd.conf'
+
+	CONF=$(add_tmpfile)
+	PASS=$(add_tmpfile)
+	print_direct_krb5_conf kdc-no-bifrost EXAMPLE.COM \
+	    kdc-no-bifrost.example.com > "$CONF"
+	$CMD kdc-no-bifrost /cmd create-admin admin |
+	    sed "s,^.*'\(.*\)',\1," > "$PASS"
+	$CMD kdc-no-bifrost krb5_admin -l modify admin \
+	    attributes-=needchange
+
+	$CMD no-bifrost-client /bin/sh -c \
+	    'mkdir -p /etc/krb5 && cat >/etc/krb5.conf' < "$CONF"
+	$CMD no-bifrost-client kinit admin < "$PASS"
+	$CMD no-bifrost-client krb5_admin \
+	    -h kdc-no-bifrost.example.com query admin >/dev/null
+
+	if $CMD no-bifrost-client curl -sS --connect-timeout 2 \
+	    -o /dev/null http://kdc-no-bifrost.example.com:3666/; then
+		echo "Bifrost accepted a connection while disabled" >&2
+		exit 1
+	fi
+
+	echo "Bifrost-disabled Asgard test completed successfully"
 }
 
 expect_krb5_host_show_krb5_conf() {
@@ -561,6 +624,7 @@ $DC up   -d --remove-orphans
 
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
 test "$($CMD kdc1 krb5_admin -l master)" = kdc1.example.com
+test_bifrost_switch
 test_separate_databases
 
 #
