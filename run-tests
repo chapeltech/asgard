@@ -190,6 +190,35 @@ test_bifrost_switch() {
 	echo "Database-controlled Bifrost startup test completed successfully"
 }
 
+test_slave_ticket_renewal() {
+	SLAVE_CONF=$(add_tmpfile)
+	IPROP_TEST_PRINC=iprop-incremental-test
+
+	echo "Testing TGT renewal through the replicated KDC"
+
+	print_krb5_conf EXAMPLE.COM kdc2.example.com \
+	    > "$SLAVE_CONF"
+	$CMD bastion /bin/sh -c 'cat >/tmp/slave-krb5.conf' < "$SLAVE_CONF"
+
+	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc \
+	    kinit -r 1h admin < "$passwd"
+	$CMD kdc1 krb5_admin -l create "$IPROP_TEST_PRINC"
+	for i in $(seq 1 30); do
+		if $CMD bastion env KRB5_CONFIG=/tmp/slave-krb5.conf \
+		    KRB5CCNAME=FILE:/tmp/slave-renew.cc \
+		    kgetcred "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null 2>&1; then
+			break
+		fi
+		sleep 1
+	done
+	$CMD bastion env KRB5_CONFIG=/tmp/slave-krb5.conf \
+	    KRB5CCNAME=FILE:/tmp/slave-renew.cc \
+	    kgetcred "$IPROP_TEST_PRINC@EXAMPLE.COM"
+	$CMD bastion env KRB5_CONFIG=/tmp/slave-krb5.conf \
+	    KRB5CCNAME=FILE:/tmp/slave-renew.cc kinit -R
+	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc klist >/dev/null
+}
+
 expect_krb5_host_show_krb5_conf() {
 	BOX="$1"
 	HOST="$2"
@@ -585,9 +614,21 @@ test_kx509_certificate bastion admin@EXAMPLE.COM admin
 #
 #
 
-provision_host kdc2
-$CMD kdc1 sh -c 'echo iprop/kdc2.example.com@EXAMPLE.COM > /var/heimdal/slaves'
-$CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com
+slave_ca=$(add_tmpfile)
+$CMD bastion krb5_admin -M -r EXAMPLE.COM print_ca > "$slave_ca"
+cmp "$ca_pub" "$slave_ca"
+
+BOOT=$($CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com < "$slave_ca")
+$CMD bastion bifrost bind_host kdc2.example.com "$BOOT"
+$CMD kdc1 bifrost -l modify_realm EXAMPLE.COM kdc+=kdc2.example.com
+if $CMD bastion perl -MIO::Socket::INET -e '
+    exit !IO::Socket::INET->new(
+        PeerAddr => "kdc2.example.com", PeerPort => 88, Timeout => 1);'; then
+	echo "slave KDC started before initial propagation" >&2
+	exit 1
+fi
+$CMD kdc2 /cmd activate-slave
+test_slave_ticket_renewal
 
 echo "Starting bifrost and krb5_admin remote admin tests"
 $CMD bastion /bin/sh /tests/run.sh
