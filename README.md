@@ -39,6 +39,13 @@ export ASGARD_HOSTNAME=kdc.example.com
 `ASGARD_HOSTNAME` must resolve to the Docker host from clients. Use real
 host naming, or add it to client `/etc/hosts`.
 
+`bifrostd` is enabled by default. To run the appliance without the daemon
+while Bifrost is under development:
+
+```sh
+export ASGARD_BIFROST=0
+```
+
 ## First Start
 
 Start the appliance:

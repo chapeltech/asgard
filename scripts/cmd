@@ -2,6 +2,7 @@
 
 SETUP_FILE=/var/heimdal/setup.done
 ASGARD_REALMS=/var/heimdal/realms
+ASGARD_INETD_CONF=/run/asgard/inetd.conf
 
 usage() {
 
@@ -42,6 +43,25 @@ emit_config() {
 	emit_cmd ls -l /var/heimdal
 	emit_cmd krb5_admin -l list \*
 	echo ------------------------------------------------------------
+}
+
+configure_inetd() {
+
+	case "${ASGARD_BIFROST:-1}" in
+	1)
+		mkdir -p "$(dirname "$ASGARD_INETD_CONF")"
+		cp /etc/inetd.conf "$ASGARD_INETD_CONF"
+		;;
+	0)
+		mkdir -p "$(dirname "$ASGARD_INETD_CONF")"
+		sed '/^bifrost[[:space:]]/d' /etc/inetd.conf \
+		    > "$ASGARD_INETD_CONF"
+		;;
+	*)
+		echo "ASGARD_BIFROST must be 0 or 1" >&2
+		exit 1
+		;;
+	esac
 }
 
 prepare() {
@@ -236,6 +256,7 @@ start_kdc() {
 
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
 
+	configure_inetd
 	prepare
 	install_kdc_keytabs
 	if [ ! -s /var/heimdal/bifrost-priv.pem ]; then
