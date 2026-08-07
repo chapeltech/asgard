@@ -117,6 +117,7 @@ RUN apt update -qq					\
 	supervisor tini					\
 	openbsd-inetd					\
 	inetutils-syslogd				\
+	jq sqlite3 rsync				\
 	knc lnetd prefork libkharon-perl krb5keytab	\
 	asgard-heimdal-clients asgard-heimdal-kdc	\
 	libkrb5admin-perl libkrb5admin-perl-kdc		\
@@ -132,7 +133,10 @@ COPY scripts/cmd /cmd
 
 RUN    ln -sf /var/heimdal/master /etc/krb5		\
     && ln -sf heimdal /var/kerberos			\
-	&& echo bifrost 3666/tcp >> /etc/services
+    && echo bifrost 3666/tcp >> /etc/services
+
+RUN    chmod 700 /scripts/asgard-rsync			\
+    && echo krb5_admin_sync 4666/tcp >> /etc/services
 
 ENTRYPOINT ["/cmd"]
 
