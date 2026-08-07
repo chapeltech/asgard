@@ -1,0 +1,23 @@
+#!/bin/sh
+
+set -eu
+
+target_arch=$1
+shift
+
+build_arch=$(dpkg --print-architecture)
+export DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)"
+
+build_type=-B
+if [ "${ASGARD_BUILD_ARCH_ALL:-no}" = yes ]; then
+	build_type=-b
+fi
+
+if [ "$target_arch" = "$build_arch" ]; then
+	exec dpkg-buildpackage "$build_type" -d -Pnocheck "$@"
+fi
+
+export DEB_BUILD_PROFILES="cross nocheck"
+exec dpkg-buildpackage \
+	--host-arch="$target_arch" \
+	"$build_type" -d -Pcross,nocheck "$@"
