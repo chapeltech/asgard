@@ -1422,6 +1422,11 @@ XREALM_LOCAL=LOCAL.XREALM.EXAMPLE
 XREALM_SERVICE=HTTP/xrealm-a.example.com@$XREALM_A
 XREALM_AB_TRUST=krbtgt/$XREALM_A@$XREALM_B
 XREALM_AD_TRUST=krbtgt/$XREALM_A@$XREALM_AD
+MULTI_A=A.MULTI.EXAMPLE
+MULTI_B=B.MULTI.EXAMPLE
+MULTI_KDC=multi-kdc.example.com
+MULTI_APASS=multi-a-password
+MULTI_BPASS=multi-b-password
 
 wait_for_xrealm_kdc() {
 	BOX="$1"
@@ -1741,14 +1746,26 @@ EOM
 assert_kx509_realm_identity() {
 	BOX="$1"
 	REALM="$2"
+	HOST="$($CMD "$BOX" hostname)"
 	DN="DC=$(printf '%s' "$REALM" | sed 's/\./,DC=/g')"
+	CCACHE="FILE:/tmp/kx509-$REALM.ccache"
+	CERT="PEM-FILE:/tmp/kx509-$REALM.pem"
 
-	$CMD "$BOX" grep -F \
-	    "subject_name = CN=\${principal-name-without-realm},$DN" \
-	    /var/heimdal/krb5.conf >/dev/null
-	$CMD "$BOX" grep -F \
-	    "subject_name = CN=\${principal-host-name},$DN" \
-	    /var/heimdal/krb5.conf >/dev/null
+	$CMD "$BOX" env KRB5CCNAME="$CCACHE" \
+	    kinit -k "host/$HOST@$REALM"
+	$CMD "$BOX" env KRB5CCNAME="$CCACHE" \
+	    heimtools kx509 -o "$CERT"
+	$CMD "$BOX" hxtool print "$CERT" |
+	    grep -F "subject: \"CN=$HOST,$DN\"" >/dev/null
+}
+
+assert_multirealm_client_conf() {
+	CONF=$(add_tmpfile)
+
+	$CMD multi-kdc /cmd print-krb5-conf > "$CONF"
+	grep "default_realm.*= $MULTI_A" "$CONF" >/dev/null
+	grep "$MULTI_A = {" "$CONF" >/dev/null
+	grep "$MULTI_B = {" "$CONF" >/dev/null
 }
 
 test_appliance_realm_identity() {
@@ -1794,6 +1811,175 @@ test_xrealm_trust_matrix() {
 	echo "xrealm trust matrix completed successfully"
 }
 
+write_multirealm_client_conf() {
+	BOX="$1"
+	REALM="$2"
+	CONF=$(add_tmpfile)
+
+	$CMD multi-kdc bifrost -l krb5_conf "$REALM" > "$CONF"
+	grep "default_realm = $REALM" "$CONF" >/dev/null
+	grep "$MULTI_A = {" "$CONF" >/dev/null
+	grep "$MULTI_B = {" "$CONF" >/dev/null
+	cat >> "$CONF" <<EOM
+
+[domain_realm]
+	multi-a.example.com = $MULTI_A
+	multi-b.example.com = $MULTI_B
+EOM
+
+	$CMD "$BOX" /bin/sh -c 'mkdir -p /etc/krb5 && cat >/etc/krb5.conf' \
+	    < "$CONF"
+}
+
+copy_multirealm_keytab() {
+	BOX="$1"
+	SRC="$2"
+	DST="$3"
+	OWNER="$4"
+	B64=$(add_tmpfile)
+
+	$CMD multi-kdc base64 "$SRC" > "$B64"
+	$CMD "$BOX" /bin/sh -c \
+	    "mkdir -p \"$(dirname "$DST")\" &&
+	    base64 -d > \"$DST\" &&
+	    chown \"$OWNER\":root \"$DST\" &&
+	    chmod 600 \"$DST\"" < "$B64"
+}
+
+install_multirealm_host_keytabs() {
+	BOX="$1"
+	REALM="$2"
+	HOST="$BOX.example.com"
+	ROOT="/tmp/$BOX-root"
+
+	$CMD multi-kdc /bin/sh -s <<EOM
+set -e
+rm -rf "$ROOT"
+mkdir -p "$ROOT/etc" "$ROOT/var/spool/keytabs"
+bifrost keytab -R "$ROOT" get -Z "host/$HOST@$REALM"
+bifrost keytab -R "$ROOT" -p www-data get -Z "HTTP/$HOST@$REALM"
+EOM
+
+	copy_multirealm_keytab "$BOX" "$ROOT/etc/krb5.keytab" \
+	    /etc/krb5.keytab root
+	copy_multirealm_keytab "$BOX" "$ROOT/var/spool/keytabs/www-data" \
+	    /var/spool/keytabs/www-data www-data
+}
+
+setup_multirealm_ssh_server() {
+	BOX="$1"
+	ALLOWED="$2"
+
+	configure_gssapi_sshd "$BOX"
+	$CMD "$BOX" /bin/sh -c 'cat >/root/.k5login' <<EOM
+$ALLOWED
+EOM
+	$CMD "$BOX" /usr/sbin/sshd
+}
+
+setup_multirealm_http_server() {
+	BOX="$1"
+	REALM="$2"
+	HOST="$BOX.example.com"
+
+	$CMD "$BOX" sh -c 'cat > /etc/nginx/sites-available/default' <<EOM
+server {
+    listen 80;
+    server_name $HOST;
+
+    root /var/www;
+
+    location / {
+	auth_gss on;
+	auth_gss_realm $REALM;
+	auth_gss_keytab /var/spool/keytabs/www-data;
+	auth_gss_service_name HTTP/$HOST;
+	auth_gss_allow_basic_fallback off;
+    }
+}
+EOM
+	$CMD "$BOX" sh -c "printf '%s\n' '$BOX' > /var/www/foo.txt"
+	$CMD "$BOX" nginx
+}
+
+kinit_multirealm_user() {
+	BOX="$1"
+	PRINC="$2"
+	PASS="$3"
+
+	$CMD "$BOX" kdestroy >/dev/null 2>&1 || /bin/true
+	printf '%s\n' "$PASS" | $CMD "$BOX" kinit "$PRINC"
+}
+
+assert_multirealm_access() {
+	FROM="$1"
+	PRINC="$2"
+	PASS="$3"
+	TO="$4"
+
+	kinit_multirealm_user "$FROM" "$PRINC" "$PASS"
+	$CMD "$FROM" ssh						\
+	    -oGSSAPIAuthentication=yes				\
+	    -oGSSAPIKeyExchange=yes				\
+	    -oStrictHostKeyChecking=no				\
+	    -oUserKnownHostsFile=/dev/null			\
+	    "$TO.example.com" /bin/true
+	BODY="$($CMD "$FROM" curl -s --negotiate \
+	    "http://$TO.example.com/foo.txt")"
+	if [ "$BODY" != "$TO" ]; then
+		echo "$FROM: expected HTTP response '$TO' from $TO, got '$BODY'" >&2
+		exit 1
+	fi
+}
+
+test_single_appliance_multirealm_services() {
+	echo "Testing one Asgard appliance serving multiple realms"
+
+	$CMD multi-kdc /cmd setup-master "$MULTI_A" "$MULTI_B"
+	wait_for_xrealm_kdc multi-kdc "$MULTI_A"
+	wait_for_xrealm_kdc multi-kdc "$MULTI_B"
+	sleep 5
+	assert_multirealm_client_conf
+	assert_kx509_realm_identity multi-kdc "$MULTI_A"
+	assert_kx509_realm_identity multi-kdc "$MULTI_B"
+
+	ensure_xrealm_realm multi-kdc "$MULTI_A"
+	ensure_xrealm_realm multi-kdc "$MULTI_B"
+	if $CMD multi-kdc bifrost -l query_host "$MULTI_KDC" | \
+	    grep '^realm:' >/dev/null; then
+		/bin/true
+	else
+		$CMD multi-kdc bifrost -l create_host "$MULTI_KDC" \
+		    realm="$MULTI_A"
+	fi
+	$CMD multi-kdc bifrost -l modify_realm "$MULTI_A" \
+	    kdc+="$MULTI_KDC" master="$MULTI_KDC"
+	$CMD multi-kdc bifrost -l modify_realm "$MULTI_B" \
+	    kdc+="$MULTI_KDC" master="$MULTI_KDC"
+	ensure_xrealm_trust multi-kdc "$MULTI_A" "$MULTI_B"
+	ensure_xrealm_trust multi-kdc "$MULTI_B" "$MULTI_A"
+	assert_xrealm_hdb_principal multi-kdc "krbtgt/$MULTI_A@$MULTI_B"
+	assert_xrealm_hdb_principal multi-kdc "krbtgt/$MULTI_B@$MULTI_A"
+
+	create_local_user multi-kdc "alice@$MULTI_A" "$MULTI_APASS"
+	create_local_user multi-kdc "bob@$MULTI_B" "$MULTI_BPASS"
+
+	write_multirealm_client_conf multi-a "$MULTI_A"
+	write_multirealm_client_conf multi-b "$MULTI_B"
+	install_multirealm_host_keytabs multi-a "$MULTI_A"
+	install_multirealm_host_keytabs multi-b "$MULTI_B"
+
+	setup_multirealm_ssh_server multi-a "bob@$MULTI_B"
+	setup_multirealm_ssh_server multi-b "alice@$MULTI_A"
+	setup_multirealm_http_server multi-a "$MULTI_A"
+	setup_multirealm_http_server multi-b "$MULTI_B"
+
+	assert_multirealm_access multi-a "alice@$MULTI_A" "$MULTI_APASS" multi-b
+	assert_multirealm_access multi-b "bob@$MULTI_B" "$MULTI_BPASS" multi-a
+
+	echo "single-appliance multi-realm service test completed successfully"
+}
+
 /bin/sh tests/asgard-create-slave.sh ./asgard-create-slave
 
 if [ -n "${ASGARD_PLATFORM:-}" ]; then
@@ -1815,6 +2001,7 @@ $CMD kdc1 /cmd setup-master EXAMPLE.COM
 setup_primary_kdc_model
 test_bifrost_switch
 test_xrealm_trust_matrix
+test_single_appliance_multirealm_services
 test_separate_databases
 test_initial_snapshot
 
