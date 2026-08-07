@@ -133,6 +133,120 @@ wait_for_host_services() {
 	wait_for_socket "$BOX" /run/bifrost/hostd.sock
 }
 
+test_slave_ticket_renewal() {
+	SLAVE_CONF=$(add_tmpfile)
+	IPROP_TEST_PRINC=iprop-incremental-test
+
+	echo "Testing TGT renewal through the replicated KDC"
+
+	$CMD kdc2 test -f /var/heimdal/setup.done
+	$CMD kdc2 krb5_keytab -l | grep -F \
+	    "host/kdc2.example.com@EXAMPLE.COM" >/dev/null
+	$CMD kdc2 krb5_keytab -l | grep -F \
+	    "krb5_admin/kdc2.example.com@EXAMPLE.COM" >/dev/null
+	$CMD kdc2 krb5_keytab -l | grep -F \
+	    "iprop/kdc2.example.com@EXAMPLE.COM" >/dev/null
+
+	create_local_principal kdc1 "$IPROP_TEST_PRINC"
+	for i in $(seq 1 30); do
+		if $CMD kdc2 krb5_admin -l query \
+		    "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null 2>&1; then
+			break
+		fi
+		sleep 1
+	done
+	$CMD kdc2 krb5_admin -l query \
+	    "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null
+
+	print_direct_krb5_conf kdc1 EXAMPLE.COM kdc2.example.com \
+	    > "$SLAVE_CONF"
+	$CMD bastion /bin/sh -c 'cat >/tmp/slave-krb5.conf' < "$SLAVE_CONF"
+
+	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc \
+	    kinit -r 1h admin < "$passwd"
+	$CMD bastion env KRB5_CONFIG=/tmp/slave-krb5.conf \
+	    KRB5CCNAME=FILE:/tmp/slave-renew.cc kinit -R
+	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc klist >/dev/null
+}
+
+test_admin_db_replication() {
+	HOST=admin-sync-test.example.com
+	ADMIN_DB=/var/heimdal/krb5_admin.db
+	REMOTE=$(add_tmpfile)
+
+	echo "Testing initial administrative database replication"
+
+	$CMD kdc1 bifrost -l create_host "$HOST" \
+	    realm=EXAMPLE.COM ip_addr=192.0.2.10
+
+	for i in $(seq 1 75); do
+		COUNT=$($CMD kdc2 sqlite3 "$ADMIN_DB" \
+		    "SELECT COUNT(*) FROM hosts WHERE name = '$HOST'" \
+		    2>/dev/null || true)
+		[ "$COUNT" = 1 ] && break
+		sleep 1
+	done
+
+	$CMD kdc2 sqlite3 "$ADMIN_DB" \
+	    "SELECT COUNT(*) FROM hosts WHERE name = '$HOST'" |
+	    grep '^1$' >/dev/null
+	$CMD kdc2 sqlite3 "$ADMIN_DB" \
+	    'PRAGMA quick_check;' | grep '^ok$' >/dev/null
+	$CMD kdc1 test -s /var/heimdal/krb5_admin.db.bak
+	$CMD kdc2 test ! -e /var/heimdal/krb5_admin.db.bak
+
+	FIRST_INODE=$($CMD kdc2 stat -c %i "$ADMIN_DB")
+
+	echo "Testing replacement of the replicated database"
+
+	$CMD kdc1 bifrost -l modify_host "$HOST" ip_addr=192.0.2.11
+
+	for i in $(seq 1 75); do
+		ADDR=$($CMD kdc2 sqlite3 "$ADMIN_DB" \
+		    "SELECT ip_addr FROM hosts WHERE name = '$HOST'" \
+		    2>/dev/null || true)
+		[ "$ADDR" = 192.0.2.11 ] && break
+		sleep 1
+	done
+
+	$CMD kdc2 sqlite3 "$ADMIN_DB" \
+	    "SELECT ip_addr FROM hosts WHERE name = '$HOST'" |
+	    grep '^192\.0\.2\.11$' >/dev/null
+	$CMD kdc2 sqlite3 "$ADMIN_DB" \
+	    'PRAGMA quick_check;' | grep '^ok$' >/dev/null
+
+	SECOND_INODE=$($CMD kdc2 stat -c %i "$ADMIN_DB")
+	if [ "$FIRST_INODE" = "$SECOND_INODE" ]; then
+		echo "rsync updated the slave database in place" >&2
+		exit 1
+	fi
+
+	$CMD bastion krb5_admin -J -h kdc2.example.com \
+	    query_host "$HOST" > "$REMOTE"
+	$CMD bastion jq -e \
+	    '.ip_addr == "192.0.2.11"' < "$REMOTE" >/dev/null
+
+	echo "Testing administrative replication authorization"
+
+	$CMD kdc1 /bin/sh -s <<'EOM'
+set -e
+CCACHE=/run/asgard/krb5cc-admin-sync-unauthorized
+trap 'rm -f "$CCACHE"' EXIT HUP INT TERM
+rm -f "$CCACHE"
+
+env KRB5CCNAME=FILE:"$CCACHE" kinit -k -t FILE:/etc/krb5.keytab \
+    host/kdc1.example.com@EXAMPLE.COM
+
+if env KRB5CCNAME=FILE:"$CCACHE" \
+    RSYNC_CONNECT_PROG="env KRB5CCNAME=FILE:$CCACHE knc iprop@%H krb5_admin_sync" \
+    rsync -a /var/heimdal/krb5_admin.db.bak \
+    kdc2.example.com::krb5_admin/krb5_admin.db; then
+	echo "non-iprop credentials synchronized the administrative database" >&2
+	exit 1
+fi
+EOM
+}
+
 test_bifrost_switch() {
 	typeset CONF PASS
 
@@ -178,42 +292,6 @@ test_bifrost_switch() {
 	fi
 
 	echo "Bifrost-disabled Asgard test completed successfully"
-}
-
-test_slave_ticket_renewal() {
-	SLAVE_CONF=$(add_tmpfile)
-	IPROP_TEST_PRINC=iprop-incremental-test
-
-	echo "Testing TGT renewal through the replicated KDC"
-
-	$CMD kdc2 test -f /var/heimdal/setup.done
-	$CMD kdc2 krb5_keytab -l | grep -F \
-	    "host/kdc2.example.com@EXAMPLE.COM" >/dev/null
-	$CMD kdc2 krb5_keytab -l | grep -F \
-	    "krb5_admin/kdc2.example.com@EXAMPLE.COM" >/dev/null
-	$CMD kdc2 krb5_keytab -l | grep -F \
-	    "iprop/kdc2.example.com@EXAMPLE.COM" >/dev/null
-
-	create_local_principal kdc1 "$IPROP_TEST_PRINC"
-	for i in $(seq 1 30); do
-		if $CMD kdc2 krb5_admin -l query \
-		    "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null 2>&1; then
-			break
-		fi
-		sleep 1
-	done
-	$CMD kdc2 krb5_admin -l query \
-	    "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null
-
-	print_direct_krb5_conf kdc1 EXAMPLE.COM kdc2.example.com \
-	    > "$SLAVE_CONF"
-	$CMD bastion /bin/sh -c 'cat >/tmp/slave-krb5.conf' < "$SLAVE_CONF"
-
-	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc \
-	    kinit -r 1h admin < "$passwd"
-	$CMD bastion env KRB5_CONFIG=/tmp/slave-krb5.conf \
-	    KRB5CCNAME=FILE:/tmp/slave-renew.cc kinit -R
-	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc klist >/dev/null
 }
 
 expect_krb5_host_show_krb5_conf() {
@@ -759,6 +837,7 @@ if $CMD kdc2 pidof kdc >/dev/null 2>&1; then
 fi
 $CMD kdc2 /cmd activate-slave
 test_slave_ticket_renewal
+test_admin_db_replication
 
 echo "Starting bifrost and krb5_admin remote admin tests"
 $CMD bastion /bin/sh /tests/run.sh

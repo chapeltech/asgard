@@ -1,0 +1,100 @@
+#!/bin/sh
+
+set -u
+
+DB=/var/heimdal/krb5_admin.db
+BACKUP=/var/heimdal/krb5_admin.db.bak
+REALMS=/var/heimdal/realms
+TARGETS=/run/asgard/admin-sync-targets.$$
+TARGETS_RAW=$TARGETS.raw
+SERVICE=krb5_admin_sync
+MODULE=krb5_admin
+
+cleanup() {
+	rm -f "$TARGETS" "$TARGETS_RAW"
+}
+
+trap cleanup EXIT HUP INT TERM
+
+collect_targets() {
+	local_host=$1
+
+	: > "$TARGETS_RAW"
+	while IFS= read -r realm; do
+		[ -n "$realm" ] || continue
+
+		if ! policy=$(bifrost -J -l query_realm "$realm"); then
+			echo "asgard-admin-sync: cannot query realm $realm" >&2
+			continue
+		fi
+
+		master=$(printf '%s\n' "$policy" | jq -r '.master // empty')
+		if [ "$master" != "$local_host" ]; then
+			echo "asgard-admin-sync: $local_host is not master for $realm" >&2
+			continue
+		fi
+
+		printf '%s\n' "$policy" |
+		    jq -r --arg realm "$realm" --arg local "$local_host" \
+		    '.kdc[] | select(. != $local) | [., $realm] | @tsv' \
+		    >> "$TARGETS_RAW"
+	done < "$REALMS"
+
+	LC_ALL=C sort -u -k1,1 "$TARGETS_RAW" > "$TARGETS"
+}
+
+sync_slave() {
+	slave=$1
+	realm=$2
+	local_host=$3
+	ccache=/run/asgard/krb5cc-admin-sync.$$.$slave
+	principal=iprop/$local_host@$realm
+
+	rm -f "$ccache"
+	trap 'rm -f "$ccache"' EXIT HUP INT TERM
+
+	if ! env KRB5CCNAME=FILE:"$ccache" \
+	    kinit -k -t FILE:/etc/krb5.keytab "$principal"; then
+		echo "asgard-admin-sync: cannot obtain credentials for $principal" >&2
+		return 1
+	fi
+
+	if ! env KRB5CCNAME=FILE:"$ccache" \
+	    RSYNC_CONNECT_PROG="env KRB5CCNAME=FILE:$ccache knc iprop@%H $SERVICE" \
+	    rsync -a "$BACKUP" "$slave::$MODULE/krb5_admin.db"; then
+		echo "asgard-admin-sync: failed to synchronize $slave" >&2
+		return 1
+	fi
+}
+
+sync_once() {
+	local_host=$1
+
+	if ! sqlite3 "$DB" ".timeout 60000" ".backup $BACKUP"; then
+		echo "asgard-admin-sync: failed to back up $DB" >&2
+		return 1
+	fi
+
+	collect_targets "$local_host"
+	while IFS="$(printf '\t')" read -r slave realm; do
+		[ -n "$slave" ] || continue
+		sync_slave "$slave" "$realm" "$local_host" &
+	done < "$TARGETS"
+	wait
+}
+
+mkdir -p /run/asgard
+chmod 700 /run/asgard
+umask 077
+
+local_host=$(hostname)
+master=$(cat /var/heimdal/master)
+
+if [ "$local_host" != "$master" ]; then
+	exec sleep infinity
+fi
+
+while :; do
+	sleep 30
+	sync_once "$local_host" || true
+done
