@@ -14,7 +14,8 @@ usage() {
 	  echo "  docker run print-ca"
 	  echo "  docker run print-krb5-conf"
 	  echo "  docker run setup-master <REALM> [REALM...]"
-	  echo "  docker run setup-slave <REALM>"
+	  echo "  docker run setup-slave <REALM> <MASTER>"
+	  echo "  docker run activate-slave"
 	  echo "  docker run shell"
 	  echo "  docker run start-kdc"
 	  echo "  docker run start-client"
@@ -413,18 +414,40 @@ setup_slave() {
 	REALM="$1"
 	MASTER="$2"
 
+	[ $# -ne 2 ] && usage "setup-slave needs two args, REALM and MASTER"
+	[ -f "$SETUP_FILE" ] && usage "Realm is already setup, exiting..."
+
 	echo Setting up subservient KDC for REALM=$REALM
 
-	[ -z "$REALM" ]  && usage "needs two args, REALM and MASTER"     
-	[ -z "$MASTER" ] && usage "needs two args, REALM and MASTER"     
+	umask 077
+	hxtool cc --no-private-keys FILE:/dev/stdin \
+	    FILE:/var/heimdal/ca-pub.pem.new
+	hxtool validate FILE:/var/heimdal/ca-pub.pem.new
+	mv /var/heimdal/ca-pub.pem.new /var/heimdal/ca-pub.pem
 
 	echo "$REALM"	> /var/heimdal/realm
+	echo "$REALM"	> "$ASGARD_REALMS"
 	echo "$MASTER"	> /var/heimdal/master
 
 	write_krb5_conf slave
+	ln -sf ../../var/heimdal/ca-pub.pem /etc/krb5/ca-pub.pem
+}
 
+activate_slave() {
+	[ $# -ne 0 ] && usage "activate-slave takes zero arguments"
+	[ -s /var/heimdal/realm ] || usage "slave has no realm"
+	[ -s /var/heimdal/master ] || usage "slave has no master"
+	CONF="$(realm_conf_name "$(cat /var/heimdal/realm)")"
+	[ -s "/var/heimdal/krb5.conf.d/$CONF.conf" ] ||
+	    usage "slave has no realm configuration"
+	[ -s /var/heimdal/ca-pub.pem ] || usage "slave has no CA certificate"
+
+	MASTER="$(cat /var/heimdal/master)"
+	krb5_keytab
+	krb5_keytab krb5_admin
+	krb5_keytab HTTP
 	krb5_keytab iprop
-
+	ipropd-slave -1 -k FILE:/etc/krb5.keytab "$MASTER"
 	touch "$SETUP_FILE"
 }
 
@@ -462,6 +485,7 @@ CMD=$(echo "$CMD" | sed s/_/-/g)
 #		add cmds: get_krb5_conf, get_ca...
 
 case "$CMD" in
+	activate-slave)		activate_slave "$@"		;;
 	create-admin)		create_admin "$@"		;;
 	print-ca)		print_ca "$@"			;;
 	print-krb5-conf)	print_krb5_conf "$@"		;;
