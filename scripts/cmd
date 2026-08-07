@@ -17,6 +17,7 @@ usage() {
 	  echo "  docker run setup-slave <REALM> <MASTER>"
 	  echo "  docker run activate-slave"
 	  echo "  docker run shell"
+	  echo "  docker run snapshot"
 	  echo "  docker run start-kdc"
 	  echo "  docker run start-client"
 	) 1>&2
@@ -280,6 +281,13 @@ shell() {
 	exec /bin/ksh -i
 }
 
+snapshot() {
+
+	[ $# -gt 0 ]	&& usage "snapshot takes zero arguments"
+
+	exec /scripts/asgard-snapshot once
+}
+
 setup_master() {
 	REALM="$1"
 
@@ -487,6 +495,7 @@ case "$CMD" in
 	setup-master)		setup_master "$@"		;;
 	setup-slave)		setup_slave "$@"		;;
 	shell)			shell "$@"			;;
+	snapshot)		snapshot "$@"			;;
 	start-kdc)		start_kdc "$@"			;;
 	start-client)		start_client "$@"			;;
 	*)			usage "unrecognised: $CMD"	;;
