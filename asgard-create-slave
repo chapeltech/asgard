@@ -1,0 +1,139 @@
+#!/bin/sh
+
+set -eu
+
+IMAGE=ghcr.io/chapeltech/asgard-kdc:latest
+COMPOSE=docker-compose.yml
+STATE=.asgard-slave-state
+BINDING=.asgard-bootstrap-binding
+
+usage() {
+	echo "usage: asgard-create-slave REALM [HOSTNAME]" >&2
+	exit 2
+}
+
+fail() {
+	echo "asgard-create-slave: $*" >&2
+	exit 1
+}
+
+[ $# -eq 1 ] || [ $# -eq 2 ] || usage
+
+REALM=$1
+HOSTNAME=${2:-$(hostname -f)}
+
+case "$HOSTNAME" in
+*.*)	;;
+*)	fail "hostname must be fully qualified: $HOSTNAME" ;;
+esac
+
+command -v docker >/dev/null 2>&1 || fail "docker is not installed"
+command -v krb5_admin >/dev/null 2>&1 ||
+    fail "krb5_admin is not installed"
+command -v bifrost >/dev/null 2>&1 || fail "bifrost is not installed"
+command -v hxtool >/dev/null 2>&1 || fail "hxtool is not installed"
+docker compose version >/dev/null 2>&1 ||
+    fail "the Docker Compose plugin is not installed"
+klist >/dev/null 2>&1 || fail "current Kerberos credentials are required"
+
+MASTER=$(krb5_admin -M -r "$REALM" master | tail -n 1)
+[ -n "$MASTER" ] || fail "could not discover the master for $REALM"
+
+MARKER="# asgard-create-slave: $REALM $HOSTNAME"
+if [ -e "$COMPOSE" ]; then
+	read -r FIRST_LINE < "$COMPOSE" || true
+	[ "$FIRST_LINE" = "$MARKER" ] ||
+	    fail "$COMPOSE already exists and was not created for this slave"
+else
+	TMP_COMPOSE=$COMPOSE.$$
+	trap 'rm -f "$TMP_COMPOSE"' EXIT HUP INT TERM
+	cat > "$TMP_COMPOSE" <<EOM
+$MARKER
+services:
+  kdc:
+    image: $IMAGE
+    hostname: $HOSTNAME
+    command: start-kdc
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - kdc:/var/heimdal
+
+volumes:
+  kdc:
+EOM
+	mv "$TMP_COMPOSE" "$COMPOSE"
+	trap - EXIT HUP INT TERM
+fi
+
+if [ -e "$STATE" ]; then
+	grep -Fx "realm=$REALM" "$STATE" >/dev/null ||
+	    fail "$STATE belongs to a different realm"
+	grep -Fx "hostname=$HOSTNAME" "$STATE" >/dev/null ||
+	    fail "$STATE belongs to a different host"
+	grep -Fx "master=$MASTER" "$STATE" >/dev/null ||
+	    fail "the discovered master changed; inspect $STATE"
+else
+	umask 077
+	cat > "$STATE" <<EOM
+realm=$REALM
+hostname=$HOSTNAME
+master=$MASTER
+image=$IMAGE
+EOM
+fi
+
+CA=$(mktemp)
+trap 'rm -f "$CA"' EXIT HUP INT TERM
+krb5_admin -M -r "$REALM" print_ca > "$CA"
+hxtool validate "FILE:$CA" || fail "the master did not return a valid CA"
+
+docker compose up -d
+for _ in $(seq 1 30); do
+	if docker compose exec -T kdc true >/dev/null 2>&1; then
+		break
+	fi
+	sleep 1
+done
+docker compose exec -T kdc true >/dev/null 2>&1 ||
+    fail "the slave container did not start"
+
+if docker compose exec -T kdc test -f /var/heimdal/setup.done; then
+	echo "Asgard slave $HOSTNAME is running for $REALM"
+	exit 0
+fi
+
+CONF=$(printf '%s\n' "$REALM" | tr . _)
+if ! docker compose exec -T kdc test -s \
+    "/var/heimdal/krb5.conf.d/$CONF.conf"; then
+	docker compose exec -T kdc /cmd setup-slave "$REALM" "$MASTER" < "$CA"
+fi
+
+if [ ! -s "$BINDING" ]; then
+	umask 077
+	docker compose exec -T kdc krb5_keytab bootstrap/RANDOM > "$BINDING"
+fi
+BOOTBINDING=$(cat "$BINDING")
+[ -n "$BOOTBINDING" ] || fail "krb5_keytab returned an empty bootstrap binding"
+
+if ! bifrost -M -r "$REALM" query_host "$HOSTNAME" >/dev/null 2>&1; then
+	bifrost -M -r "$REALM" create_host "$HOSTNAME" realm="$REALM"
+fi
+
+BIFROST_TLS_CA=$CA bifrost -M -r "$REALM" \
+    modify_realm "$REALM" "kdc+=$HOSTNAME"
+bifrost -M -r "$REALM" bind_host "$HOSTNAME" "$BOOTBINDING"
+
+docker compose exec -T kdc /cmd activate-slave
+rm -f "$BINDING"
+
+for _ in $(seq 1 120); do
+	if docker compose exec -T kdc \
+	    test -f /var/heimdal/setup.done; then
+		echo "Asgard slave $HOSTNAME joined $REALM"
+		exit 0
+	fi
+	sleep 1
+done
+
+fail "the slave was enrolled but iprop did not finish bootstrapping"
