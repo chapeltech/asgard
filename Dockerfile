@@ -116,6 +116,7 @@ RUN apt update -qq					\
 	supervisor tini					\
 	openbsd-inetd					\
 	inetutils-syslogd				\
+	nsd dnsutils					\
 	jq sqlite3 rsync				\
 	knc lnetd prefork libkharon-perl krb5keytab	\
 	asgard-heimdal-clients asgard-heimdal-kdc	\
