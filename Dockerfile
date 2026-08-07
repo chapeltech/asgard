@@ -113,7 +113,7 @@ RUN apt update -qq					\
     && configure-chapeltech-apt				\
     && apt update -qq					\
     && apt install -y --no-install-recommends		\
-	coreutils mksh nvi				\
+	coreutils cron mksh nvi				\
 	supervisor tini					\
 	openbsd-inetd					\
 	inetutils-syslogd				\

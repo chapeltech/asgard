@@ -1,0 +1,31 @@
+#!/bin/sh -e
+
+SNAPS=/var/heimdal/snaps
+
+umask 077
+
+[ $# -eq 1 ] || exit 2
+
+case "$1" in
+hourly)
+	dst="$SNAPS/hourly/$(date +%H)"
+	mkdir -p "$dst"
+	cp /var/heimdal/heimdal.db "$dst"
+	sqlite3 /var/heimdal/krb5_admin.db ".backup $dst/krb5_admin.db"
+	;;
+daily)
+	src="$SNAPS/hourly/00"
+	dst="$SNAPS/daily/$(date +%w)"
+	mkdir -p "$dst"
+	cp "$src/heimdal.db" "$src/krb5_admin.db" "$dst"
+	;;
+weekly)
+	src="$SNAPS/daily/0"
+	dst="$SNAPS/weekly/$(date +%U)"
+	mkdir -p "$dst"
+	cp "$src/heimdal.db" "$src/krb5_admin.db" "$dst"
+	;;
+*)
+	exit 2
+	;;
+esac
