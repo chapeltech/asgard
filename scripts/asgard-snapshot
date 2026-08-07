@@ -1,0 +1,156 @@
+#!/bin/sh
+
+set -eu
+
+SNAP_ROOT=${ASGARD_SNAPSHOT_ROOT:-/var/heimdal/snaps}
+DB=/var/kerberos/krb5_admin.db
+LOCKDIR=$SNAP_ROOT/.lock
+
+usage() {
+	echo "usage: asgard-snapshot [once|loop]" >&2
+	exit 2
+}
+
+hour_slot() {
+	if [ -n "${ASGARD_SNAPSHOT_HOUR:-}" ]; then
+		printf 'hour.%02d\n' "$ASGARD_SNAPSHOT_HOUR"
+	else
+		date '+hour.%H'
+	fi
+}
+
+day_slot() {
+	if [ -n "${ASGARD_SNAPSHOT_DAY:-}" ]; then
+		printf 'day.%s\n' "$ASGARD_SNAPSHOT_DAY"
+	else
+		date '+day.%w'
+	fi
+}
+
+seconds_to_next_hour() {
+	min=$(date '+%M' | sed 's/^0//')
+	sec=$(date '+%S' | sed 's/^0//')
+	min=${min:-0}
+	sec=${sec:-0}
+	echo $((3600 - (min * 60 + sec)))
+}
+
+lock() {
+	mkdir -p "$SNAP_ROOT"
+	chmod 700 "$SNAP_ROOT"
+
+	if ! mkdir "$LOCKDIR" 2>/dev/null; then
+		echo "asgard-snapshot: snapshot already running" >&2
+		exit 1
+	fi
+	trap 'rm -rf "$LOCKDIR"' EXIT HUP INT TERM
+}
+
+unlock() {
+	rm -rf "$LOCKDIR"
+	trap - EXIT HUP INT TERM
+}
+
+replace_dir() {
+	src=$1
+	dst=$2
+	old=$dst.old.$$
+
+	rm -rf "$old"
+	if [ -d "$dst" ]; then
+		mv "$dst" "$old"
+	fi
+	mv "$src" "$dst"
+	rm -rf "$old"
+}
+
+promote_daily_if_needed() {
+	slot=$1
+	day=$2
+
+	[ "$slot" = hour.00 ] || return 0
+	[ -d "$SNAP_ROOT/$slot" ] || return 0
+
+	replace_dir "$SNAP_ROOT/$slot" "$SNAP_ROOT/$day"
+}
+
+copy_if_present() {
+	src=$1
+	dst=$2
+
+	[ -e "$src" ] || return 0
+	cp -p "$src" "$dst/"
+}
+
+snapshot_once() {
+	umask 077
+
+	if [ ! -f "$DB" ]; then
+		echo "asgard-snapshot: $DB does not exist yet" >&2
+		return 1
+	fi
+
+	lock
+
+	slot=$(hour_slot)
+	day=$(day_slot)
+	tmp=$SNAP_ROOT/.new.$$
+
+	rm -rf "$tmp"
+	mkdir -p "$tmp"
+	chmod 700 "$tmp"
+
+	sqlite3 "$DB" ".timeout 60000" ".backup $tmp/krb5_admin.db"
+	check=$(sqlite3 "$tmp/krb5_admin.db" "PRAGMA quick_check;")
+	if [ "$check" != ok ]; then
+		echo "asgard-snapshot: quick_check failed: $check" >&2
+		rm -rf "$tmp"
+		exit 1
+	fi
+
+	if [ -d /var/heimdal/krb5.conf.d ]; then
+		cp -Rp /var/heimdal/krb5.conf.d "$tmp"
+	fi
+	copy_if_present /var/heimdal/realm "$tmp"
+	copy_if_present /var/heimdal/realms "$tmp"
+	copy_if_present /var/heimdal/master "$tmp"
+	copy_if_present /var/heimdal/ca-pub.pem "$tmp"
+	copy_if_present /var/heimdal/ca-priv.pem "$tmp"
+	copy_if_present /var/heimdal/kdc-pub.pem "$tmp"
+	copy_if_present /var/heimdal/kdc-priv.pem "$tmp"
+	copy_if_present /var/heimdal/kx509-pub.pem "$tmp"
+	copy_if_present /var/heimdal/kx509-priv.pem "$tmp"
+	copy_if_present /var/heimdal/bifrost-priv.pem "$tmp"
+
+	{
+		printf 'created_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+		printf 'source_db=%s\n' "$DB"
+		printf 'slot=%s\n' "$slot"
+		printf 'day_slot=%s\n' "$day"
+	} > "$tmp/manifest"
+
+	promote_daily_if_needed "$slot" "$day"
+	replace_dir "$tmp" "$SNAP_ROOT/$slot"
+	unlock
+}
+
+snapshot_loop() {
+	while [ ! -f "$DB" ]; do
+		sleep 5
+	done
+
+	while true; do
+		sleep "$(seconds_to_next_hour)"
+		snapshot_once || true
+	done
+}
+
+cmd=${1:-once}
+shift || true
+[ $# -eq 0 ] || usage
+
+case "$cmd" in
+	once)	snapshot_once	;;
+	loop)	snapshot_loop	;;
+	*)	usage		;;
+esac
