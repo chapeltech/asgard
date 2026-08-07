@@ -2,7 +2,73 @@
 
 set -e
 
-DC="docker compose -f test-asgard.yml"
+RED_HAT=1
+RED_HAT_BUILD=1
+KEEP_ON_FAIL=0
+ATTACH=0
+
+usage() {
+
+	cat >&2 <<'EOM'
+usage: run-tests [-a] [-k] [-B] [-R]
+
+  -a  attach to the compose stack after tests complete
+  -k  keep the compose stack on failure
+  -B  skip building the Red Hat package image
+  -R  skip the Red Hat package-image hosts and tests
+EOM
+}
+
+OPTS=$(getopt -o '+akBRh' -- "$@") || {
+	usage
+	exit 2
+}
+eval set -- "$OPTS"
+
+while true; do
+	case "$1" in
+	-a)
+		ATTACH=1
+		shift
+		;;
+	-k)
+		KEEP_ON_FAIL=1
+		shift
+		;;
+	-B)
+		RED_HAT_BUILD=0
+		shift
+		;;
+	-R)
+		RED_HAT=0
+		shift
+		;;
+	-h)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+	esac
+done
+
+if [ $# -ne 0 ]; then
+	echo "run-tests: unexpected argument: $1" >&2
+	usage
+	exit 2
+fi
+
+COMPOSE_FILES="-f test-asgard.yml"
+
+if [ "$RED_HAT" = 1 ]; then
+	COMPOSE_PROFILES="--profile redhat"
+else
+	COMPOSE_PROFILES=
+fi
+
+DC="docker compose $COMPOSE_FILES $COMPOSE_PROFILES"
 CMD="$DC exec -T"
 
 #
@@ -16,11 +82,20 @@ add_tmpfile() {
 	echo $TMP
 }
 
+build_redhat_images() {
+
+	[ "$RED_HAT" = 1 ] || return 0
+	[ "$RED_HAT_BUILD" = 1 ] || return 0
+
+	echo "Building Red Hat package image bifrost-redhat-dns"
+	../bifrost/packaging/dev/redhat-dns/build-image bifrost-redhat-dns
+}
+
 bail() {
 	STATUS=$?
 
 	rm -f $TMP_FILES
-	if [ $STATUS -ne 0 ] && [ "${ASGARD_KEEP_ON_FAIL:-}" = 1 ]; then
+	if [ $STATUS -ne 0 ] && [ "$KEEP_ON_FAIL" = 1 ]; then
 		exit $STATUS
 	fi
 	$DC down -v --remove-orphans
@@ -38,13 +113,15 @@ trap bail 0
 provision_host_krb5_conf() {
 	BOX="$1"
 
-	$CMD "$BOX" /bin/sh -c "cat >/etc/krb5.conf" < $krb5_conf
+	$CMD "$BOX" /bin/sh -c 'mkdir -p /etc/krb5 && cat >/etc/krb5.conf' \
+	    < $krb5_conf
 }
 
 provision_host_ca() {
 	BOX="$1"
 
-	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/ca-pub.pem' < $ca_pub
+	$CMD "$BOX" /bin/sh -c 'mkdir -p /etc/krb5 && cat >/etc/krb5/ca-pub.pem' \
+	    < $ca_pub
 }
 
 provision_host_hostd_conf() {
@@ -59,6 +136,18 @@ EOM
 
 	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/krb5_admind.conf' \
 	    </dev/null
+}
+
+provision_redhat_services() {
+	BOX="$1"
+
+	$CMD "$BOX" /bin/sh -c \
+	    'grep -v -E "^(bifrost|krb5_admin)[[:space:]]" /etc/services \
+	    > /tmp/services.$$ &&
+	    printf "bifrost 3666/tcp\nkrb5_admin 2666/tcp\n" \
+	    >> /tmp/services.$$ &&
+	    cat /tmp/services.$$ > /etc/services &&
+	    rm -f /tmp/services.$$'
 }
 
 provision_host() {
@@ -81,13 +170,27 @@ provision_host_bifrost() {
 	provision_host_krb5_conf "$BOX"
 	provision_host_ca "$BOX"
 
-	BOOT=$($CMD "$BOX" bifrost keytab bootstrap/RANDOM)
+	BOOT=$($CMD "$BOX" bifrost keytab get bootstrap/RANDOM)
 
 	$CMD bastion bifrost bind_host			\
 	    $BOX.example.com $BOOT
 
-	$CMD "$BOX" bifrost keytab
+	$CMD "$BOX" bifrost keytab get
 	provision_host_hostd_conf "$BOX"
+}
+
+provision_host_bifrost_keytab() {
+	BOX="$1"
+
+	provision_host_krb5_conf "$BOX"
+	provision_host_ca "$BOX"
+
+	BOOT=$($CMD "$BOX" bifrost keytab get bootstrap/RANDOM)
+
+	$CMD bastion bifrost bind_host			\
+	    $BOX.example.com $BOOT
+
+	$CMD "$BOX" bifrost keytab get
 }
 
 wait_for_socket() {
@@ -156,9 +259,13 @@ test_kx509_certificate() {
 	echo "Testing kx509 certificate issuance for $PRINC on $BOX"
 
 	$CMD "$BOX" rm -f "$STORE"
-	$CMD "$BOX" heimtools kx509 -s
-	$CMD "$BOX" heimtools kx509 -o "PEM-FILE:$STORE"
+	$CMD "$BOX" kx509 kx509 -s
+	$CMD "$BOX" kx509 kx509 -o "PEM-FILE:$STORE"
 	$CMD "$BOX" test -s "$STORE"
+	$CMD "$BOX" grep -c 'BEGIN CERTIFICATE' "$STORE" | grep '^3$'
+	$CMD "$BOX" hxtool verify --missing-revoke \
+	    "cert:PEM-FILE:$STORE" "chain:PEM-FILE:$STORE" \
+	    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
 	$CMD "$BOX" hxtool print "PEM-FILE:$STORE" > "$PRINT"
 
 	grep "CN=$CN" "$PRINT" >/dev/null
@@ -176,6 +283,23 @@ normalise_client_json() {
 	$CMD bastion jq -S --arg host "$HOST" \
 	    'walk(if type == "string" then gsub($host; "HOST") else . end)' \
 	    < "$RAW" > "$OUT"
+}
+
+normalise_host_json() {
+	HOST="$1"
+	RAW="$2"
+	OUT="$3"
+
+	$CMD bastion jq -S --arg host "$HOST" \
+	    'walk(
+		if type == "string" then
+		    gsub($host; "HOST")
+		elif type == "object" then
+		    del(.ip_addr)
+		else
+		    .
+		end
+	    )' < "$RAW" > "$OUT"
 }
 
 normalise_ticket_json() {
@@ -235,7 +359,7 @@ normalised_admin_host_query() {
 	RAW=$(add_tmpfile)
 
 	$CMD bastion bifrost -J query_host "$HOST" > "$RAW"
-	normalise_client_json "$HOST" "$RAW" "$OUT"
+	normalise_host_json "$HOST" "$RAW" "$OUT"
 }
 
 normalised_remote_host_command() {
@@ -245,7 +369,7 @@ normalised_remote_host_command() {
 	RAW=$(add_tmpfile)
 
 	$CMD bastion krb5_host -J -h "$HOST" "$@" > "$RAW"
-	normalise_client_json "$HOST" "$RAW" "$OUT"
+	normalise_host_json "$HOST" "$RAW" "$OUT"
 }
 
 normalised_remote_ticket_query() {
@@ -345,18 +469,73 @@ install_client_prestashed_ticket() {
 
 	$CMD "$BOX" test -f /var/spool/tickets/www-data
 	$CMD "$BOX" su -s /bin/sh -c \
-	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
+	    'PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
 
-	if [ "$BOX" = client-bifrost ]; then
-		$CMD "$BOX" test -f /var/spool/certs/www-data
-		$CMD "$BOX" hxtool verify --missing-revoke \
-		    cert:PEM-FILE:/var/spool/certs/www-data \
-		    chain:PEM-FILE:/var/spool/certs/www-data \
-		    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
-		$CMD "$BOX" su -s /bin/sh -c \
-		    'kinit -C PEM-FILE:/var/spool/certs/www-data \
-		    www-data@EXAMPLE.COM && klist >/dev/null' www-data
-	fi
+	$CMD "$BOX" test -f /var/spool/certs/www-data
+	$CMD "$BOX" su -s /bin/sh -c \
+	    'PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    kinit -C PEM-FILE:/var/spool/certs/www-data \
+	    www-data@EXAMPLE.COM && \
+	    PATH=/usr/lib/asgard/bin:/usr/bin:/bin klist >/dev/null' www-data
+}
+
+remove_prestashed_material() {
+	BOX="$1"
+	USER="$2"
+
+	$CMD "$BOX" rm -f "/var/spool/tickets/$USER" \
+	    "/var/spool/certs/$USER"
+}
+
+verify_prestashed_material() {
+	BOX="$1"
+	USER="$2"
+	PRINC="$USER@EXAMPLE.COM"
+
+	$CMD "$BOX" test -s "/var/spool/tickets/$USER"
+	$CMD "$BOX" su -s /bin/sh -c \
+	    "PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    klist -c FILE:/var/spool/tickets/$USER >/dev/null" "$USER"
+	$CMD "$BOX" test -s "/var/spool/certs/$USER"
+	$CMD "$BOX" hxtool verify --missing-revoke \
+	    "cert:PEM-FILE:/var/spool/certs/$USER" \
+	    "chain:PEM-FILE:/var/spool/certs/$USER" \
+	    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
+	$CMD "$BOX" su -s /bin/sh -c \
+	    "PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    kinit -C PEM-FILE:/var/spool/certs/$USER '$PRINC' &&
+	    PATH=/usr/lib/asgard/bin:/usr/bin:/bin klist >/dev/null" "$USER"
+}
+
+wait_for_prestashed_material() {
+	BOX="$1"
+	USER="$2"
+
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+		if $CMD "$BOX" test -s "/var/spool/tickets/$USER" \
+		    -a -s "/var/spool/certs/$USER"; then
+			verify_prestashed_material "$BOX" "$USER"
+			return
+		fi
+		sleep 1
+	done
+
+	echo "$BOX: prestashed material for $USER was not delivered" 1>&2
+	exit 1
+}
+
+test_prestash_systemd_fetch() {
+	BOX="$1"
+	USER="$2"
+	UNIT=/usr/lib/systemd/system/krb5-prestash-refresh.service
+
+	echo "Testing packaged prestash service on $BOX"
+	remove_prestashed_material "$BOX" "$USER"
+	$CMD "$BOX" grep -Fx 'ExecStart=/usr/bin/krb5_prestash fetch' \
+	    "$UNIT" >/dev/null
+	$CMD "$BOX" /usr/bin/krb5_prestash fetch
+	verify_prestashed_material "$BOX" "$USER"
 }
 
 compare_client_prestashed_tickets() {
@@ -376,6 +555,8 @@ compare_client_prestashed_tickets() {
 	install_client_prestashed_ticket "$KRB5_BOX"
 	install_client_prestashed_ticket "$BIFROST_BOX"
 	compare_client_installed_tickets "$KRB5_BOX" "$BIFROST_BOX"
+	test_prestash_systemd_fetch "$KRB5_BOX" www-data
+	echo "krb5_prestash fetch live parity completed successfully"
 }
 
 compare_client_remote_keytabs() {
@@ -414,7 +595,108 @@ compare_test_clients() {
 	    env "$HOSTD_ENV" bifrost -J host list_keytab root
 	compare_client_host_queries "$KRB5_BOX" "$BIFROST_BOX"
 	compare_client_remote_keytabs "$KRB5_BOX" "$BIFROST_BOX"
+	echo "krb5_admin protocol bootstrap parity completed successfully"
+	echo "krb5_admin protocol rows covered: create_bootstrap_id bootstrap_host_key curve25519_start curve25519_final"
 	compare_client_prestashed_tickets
+}
+
+test_redhat_dns_cli() {
+	BOX="$1"
+
+	echo "Testing Red Hat packaged bifrost DNS CLI on $BOX"
+
+	$CMD "$BOX" /bin/sh -c \
+	    'bifrost-dns-demo-reset >/dev/null &&
+	    bifrost -l -S "$BIFROST_DEMO_DB" query_domain example.com >/dev/null &&
+	    bifrost -l -S "$BIFROST_DEMO_DB" dns_zone example.com >/dev/null'
+}
+
+test_systemd_hostd_units() {
+	BOX="$1"
+
+	echo "Testing packaged systemd host daemon linkage on $BOX"
+	$CMD "$BOX" /bin/sh -c '
+	    set -e
+	    unitdir=/usr/lib/systemd/system
+	    for unit in krb5-hostd.socket krb5-hostd.service \
+	        krb5-hostd-knc.socket krb5-hostd-knc.service \
+	        krb5-hostd.target \
+	        krb5-prestash-refresh.service \
+	        krb5-prestash-refresh.timer; do
+	        test -r "$unitdir/$unit"
+	    done
+	    test "$unitdir/krb5-hostd.target" = \
+	        "$(readlink -f "/etc/systemd/system/multi-user.target.wants/krb5-hostd.target")"
+	    test "$unitdir/krb5-prestash-refresh.timer" = \
+	        "$(readlink -f "/etc/systemd/system/timers.target.wants/krb5-prestash-refresh.timer")"
+	    grep -Fx "Wants=krb5-hostd.socket krb5-hostd-knc.socket" \
+	        "$unitdir/krb5-hostd.target" >/dev/null
+	    grep -Fx \
+	        "Wants=krb5-prestash-refresh.service krb5-prestash-refresh.timer" \
+	        "$unitdir/krb5-hostd.target" >/dev/null
+	    grep -Fx "ListenStream=/run/krb5_hostd" \
+	        "$unitdir/krb5-hostd.socket" >/dev/null
+	    grep -Fx "ListenStream=2666" \
+	        "$unitdir/krb5-hostd-knc.socket" >/dev/null
+	    grep -Fx \
+	        "ExecStart=/usr/libexec/prefork /usr/sbin/krb5_hostd -P" \
+	        "$unitdir/krb5-hostd.service" >/dev/null
+	    grep -Fx \
+	        "ExecStart=/usr/libexec/prefork /usr/bin/knc -iS /run/krb5_hostd" \
+	        "$unitdir/krb5-hostd-knc.service" >/dev/null
+	    grep -Fx "ExecStart=/usr/bin/krb5_prestash fetch" \
+	        "$unitdir/krb5-prestash-refresh.service" >/dev/null
+	    grep -Fx "Persistent=yes" \
+	        "$unitdir/krb5-prestash-refresh.timer" >/dev/null
+	    systemd-analyze verify --man=no \
+	        "$unitdir"/krb5-hostd*.socket \
+	        "$unitdir"/krb5-hostd*.service \
+	        "$unitdir"/krb5-hostd.target \
+	        "$unitdir"/krb5-prestash-refresh.service \
+	        "$unitdir"/krb5-prestash-refresh.timer
+	    systemd-analyze calendar "*-*-* 02:00:00" >/dev/null
+	    if command -v rpm >/dev/null 2>&1; then
+	        rpm -qf "$unitdir/krb5-hostd.service" |
+	            grep -F krb5-hostd >/dev/null
+	    else
+	        dpkg-query -S "$unitdir/krb5-hostd.service" |
+	            grep -F krb5-hostd >/dev/null
+	    fi'
+}
+
+test_redhat_clients() {
+
+	[ "$RED_HAT" = 1 ] || return 0
+
+	echo "Starting Red Hat package image tests"
+	test_systemd_hostd_units redhat-krb5
+	$CMD redhat-krb5 /bin/sh -c '
+	    deps=$(ldd /usr/bin/knc) &&
+	    printf "%s\n" "$deps" | grep -F libgssapi_krb5.so.2 >/dev/null &&
+	    ! printf "%s\n" "$deps" | grep -F libgssapi.so.3 >/dev/null'
+
+	provision_redhat_services redhat-krb5
+	provision_host redhat-krb5
+	provision_host_hostd_conf redhat-krb5
+	$CMD redhat-krb5 bifrost -l host list_keytab root >/dev/null
+	$CMD redhat-krb5 krb5_keytab >/dev/null
+
+	provision_redhat_services redhat-bifrost
+	provision_host_bifrost_keytab redhat-bifrost
+	$CMD redhat-bifrost bifrost -l host list_keytab root >/dev/null
+	$CMD redhat-bifrost krb5_keytab >/dev/null
+
+	compare_client_command "Red Hat local bifrost root keytab"	\
+	    redhat-krb5 redhat-bifrost				\
+	    bifrost -J -l host list_keytab root
+	$CMD redhat-krb5 useradd --system --no-create-home www-data || /bin/true
+	ensure_www_data_appid
+	$CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
+	    redhat-krb5.example.com || /bin/true
+	test_prestash_systemd_fetch redhat-krb5 www-data
+	test_redhat_dns_cli redhat-bifrost
+
+	echo "Red Hat package image tests completed successfully"
 }
 
 ensure_www_data_appid() {
@@ -427,25 +709,35 @@ ensure_www_data_appid() {
 	$CMD bastion bifrost create_appid www-data
 }
 
-test_prestashed_tickets() {
+test_instant_prestashed_tickets() {
 	BOX="$1"
 	PRINC=www-data@EXAMPLE.COM
 
-	echo "Testing prestashed ticket delivery to $BOX"
+	echo "Testing immediate prestashed ticket delivery to $BOX"
 
 	ensure_www_data_appid
-	$CMD bastion bifrost insert_ticket "$PRINC"	\
-	    "$BOX.example.com" || /bin/true
+	remove_prestashed_material "$BOX" www-data
+	if ! $CMD bastion krb5_admin insert_ticket "$PRINC" \
+	    "$BOX.example.com"; then
+		$CMD bastion krb5_admin refresh_ticket "$PRINC" \
+		    "$BOX.example.com"
+	fi
 	$CMD bastion bifrost -J query_ticket principal \
 	    "$PRINC" >/dev/null
-
-	$CMD "$BOX" krb5_prestash fetch EXAMPLE.COM
-	$CMD "$BOX" test -f /var/spool/tickets/www-data
-	$CMD "$BOX" su -s /bin/sh -c \
-	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
+	wait_for_prestashed_material "$BOX" www-data
 }
 
-docker buildx bake --allow=fs.read=../bifrost
+if [ -n "${ASGARD_PLATFORM:-}" ]; then
+	docker buildx bake \
+	    --set "*.platform=$ASGARD_PLATFORM" \
+	    --allow=fs.read=../bifrost \
+	    --allow=fs.read=../krb5_admin test
+else
+	docker buildx bake \
+	    --allow=fs.read=../bifrost \
+	    --allow=fs.read=../krb5_admin test
+fi
+build_redhat_images
 
 $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
@@ -501,10 +793,6 @@ test_kx509_certificate bastion admin@EXAMPLE.COM admin
 #
 #
 
-provision_host kdc2
-$CMD kdc1 sh -c 'echo iprop/kdc2.example.com@EXAMPLE.COM > /var/heimdal/slaves'
-$CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com
-
 echo "Starting bifrost and krb5_admin remote admin tests"
 $CMD bastion /bin/sh /tests/run.sh
 echo "bifrost and krb5_admin remote admin tests completed successfully"
@@ -522,12 +810,14 @@ $CMD bastion krb5_admin modify user		\
 
 provision_host client-krb5
 provision_host_hostd_conf client-krb5
+test_systemd_hostd_units client-krb5
 test_bifrost_host_cli client-krb5
 
 provision_host_bifrost client-bifrost
 test_bifrost_host_cli client-bifrost
 
 compare_test_clients
+test_redhat_clients
 
 $CMD client-krb5 kinit user < $passwd
 $CMD client-bifrost kinit user < $passwd
@@ -578,7 +868,7 @@ $CMD bastion krb5_admin principal_map_add www-data HTTP \
 echo "Setting up the web server..."
 $CMD httpserver krb5_keytab -p www-data HTTP
 $CMD httpserver bifrost -l host list_keytab www-data >/dev/null
-test_prestashed_tickets httpserver
+test_instant_prestashed_tickets httpserver
 $CMD httpserver sh -c 'cat > /etc/nginx/sites-available/default' <<EOM
 server {
     listen 80;
@@ -618,6 +908,6 @@ done
 
 echo "Web Server test completed successfully"
 
-if [ "${ASGARD_ATTACH:-}" = 1 ]; then
+if [ "$ATTACH" = 1 ]; then
 	$DC up
 fi
