@@ -1,5 +1,9 @@
 group "default" {
-  targets = ["kdc", "client"]
+  targets = ["kdc-test", "client"]
+}
+
+group "test" {
+  targets = ["kdc-test", "client"]
 }
 
 target "kdc" {
@@ -11,11 +15,20 @@ target "kdc" {
   }
 }
 
+target "kdc-test" {
+  inherits = ["kdc"]
+  target   = "kdc-test"
+  contexts = {
+    krb5_admin = "../krb5_admin"
+  }
+}
+
 target "client" {
   dockerfile = "Dockerfile"
   target     = "client"
   tags       = ["asgard/client"]
   contexts = {
     bifrost = "../bifrost"
+    krb5_admin = "../krb5_admin"
   }
 }
