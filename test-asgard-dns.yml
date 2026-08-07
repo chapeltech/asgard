@@ -1,0 +1,58 @@
+x-kdc-dns-env: &kdc-dns-env
+  ASGARD_DNS: "1"
+  BIFROST_DNS_ZONE_DIR: /var/lib/nsd/zones
+  BIFROST_DNS_NSD_CONF: /var/lib/nsd/zones/bifrost.conf
+  BIFROST_DNS_CHECK_COMMAND: 'nsd-checkzone "$$BIFROST_DNS_DOMAIN" "$$BIFROST_DNS_ZONE_FILE"'
+  BIFROST_DNS_RELOAD_COMMAND: "if test -s /run/nsd/nsd.pid; then nsd-control reconfig && nsd-control reload; fi"
+
+x-client-dns: &client-dns
+  - 172.30.0.11
+
+services:
+  kdc1:
+    environment: *kdc-dns-env
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.11
+
+  kdc2:
+    environment: *kdc-dns-env
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.12
+
+  bastion:
+    dns: *client-dns
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.20
+
+  httpserver:
+    dns: *client-dns
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.21
+
+  sshserver:
+    dns: *client-dns
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.22
+
+  client-krb5:
+    dns: *client-dns
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.23
+
+  client-bifrost:
+    dns: *client-dns
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.24
+
+networks:
+  asgard-dns:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
