@@ -50,6 +50,19 @@ services:
     command: start-client
 
   #
+  # These two hosts share a logical host keytab so the tests can exercise
+  # clustered service identities.
+  sshcluster-a:
+    image: asgard/client
+    hostname: sshcluster-a.example.com
+    command: start-client
+
+  sshcluster-b:
+    image: asgard/client
+    hostname: sshcluster-b.example.com
+    command: start-client
+
+  #
   # These hosts are otherwise identical clients.  The test harness
   # provisions one with krb5_admin/krb5_keytab and the other with bifrost,
   # then compares the resulting host state.
