@@ -42,6 +42,16 @@ emit_config() {
 	echo ------------------------------------------------------------
 }
 
+configure_inetd() {
+
+	BIFROSTD="$(bifrost -l query_config bifrostd)"
+	if [ "$BIFROSTD" = 1 ]; then
+		sed -i 's/^#bifrost/bifrost/' /etc/inetd.conf
+	else
+		sed -i 's/^bifrost/#bifrost/' /etc/inetd.conf
+	fi
+}
+
 prepare() {
 
 	[ $debug -gt 0 ]	&& emit_config
@@ -210,6 +220,7 @@ start_kdc() {
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
 
 	prepare
+	configure_inetd
 	reconcile_realms
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }

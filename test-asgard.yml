@@ -8,6 +8,19 @@ services:
     image: asgard/kdc
     hostname: kdc2.example.com
     command: start-kdc
+
+  kdc-no-bifrost:
+    image: asgard/kdc
+    hostname: kdc-no-bifrost.example.com
+    command: start-kdc
+    volumes:
+      - kdc-no-bifrost:/var/heimdal
+
+  no-bifrost-client:
+    image: asgard/client
+    hostname: no-bifrost-client.example.com
+    command: start-client
+
   #
   # This is the host on which the administrator
   # will be running commands:
@@ -45,3 +58,6 @@ services:
     image: asgard/client
     hostname: client-bifrost.example.com
     command: start-client
+
+volumes:
+  kdc-no-bifrost:

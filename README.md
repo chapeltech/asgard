@@ -53,6 +53,16 @@ Initialize the realm inside the running container:
 docker compose exec kdc /cmd setup-master EXAMPLE.COM
 ```
 
+`bifrostd` is disabled by default. To enable it after setup:
+
+```sh
+docker compose exec kdc bifrost -l modify_config bifrostd=1
+docker compose restart kdc
+```
+
+Use `bifrostd=0` to disable it. Set this on the master: it is stored in
+`krb5_admin.db` and replicated to slaves. Each KDC applies it on restart.
+
 The container starts its services after initialization completes.
 
 ## Create an Admin Principal

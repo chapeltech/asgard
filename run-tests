@@ -128,6 +128,68 @@ wait_for_host_services() {
 	wait_for_socket "$BOX" /run/bifrost/hostd.sock
 }
 
+bifrost_listening() {
+	$CMD no-bifrost-client perl -MIO::Socket::INET -e '
+	    exit !IO::Socket::INET->new(
+	        PeerAddr => "kdc-no-bifrost.example.com", PeerPort => 3666,
+	        Timeout => 1);'
+}
+
+test_bifrost_switch() {
+	typeset CONF PASS
+
+	echo "Testing Asgard with Bifrost disabled by default"
+	$CMD kdc-no-bifrost /cmd setup-master EXAMPLE.COM
+	test "$($CMD kdc-no-bifrost bifrost -l query_config bifrostd)" = 0
+
+	CONF=$(add_tmpfile)
+	PASS=$(add_tmpfile)
+	print_krb5_conf EXAMPLE.COM \
+	    kdc-no-bifrost.example.com > "$CONF"
+	$CMD kdc-no-bifrost /cmd create-admin admin |
+	    sed "s,^.*'\(.*\)',\1," > "$PASS"
+	$CMD kdc-no-bifrost krb5_admin -l modify admin \
+	    attributes-=needchange
+
+	$CMD no-bifrost-client /bin/sh -c \
+	    'mkdir -p /etc/krb5 && cat >/etc/krb5.conf' < "$CONF"
+	for i in $(seq 1 20); do
+		$CMD no-bifrost-client kinit admin < "$PASS" && break
+		sleep 1
+	done
+	$CMD no-bifrost-client krb5_admin \
+	    -h kdc-no-bifrost.example.com query admin >/dev/null
+
+	if bifrost_listening; then
+		echo "Bifrost accepted a connection while disabled" >&2
+		exit 1
+	fi
+
+	$CMD kdc-no-bifrost bifrost -l modify_config bifrostd=1
+	$DC restart kdc-no-bifrost
+	for i in $(seq 1 20); do
+		bifrost_listening && break
+		sleep 1
+	done
+	bifrost_listening
+
+	$CMD kdc-no-bifrost bifrost -l modify_config bifrostd=0
+	$DC restart kdc-no-bifrost
+	for i in $(seq 1 20); do
+		$CMD no-bifrost-client krb5_admin \
+		    -h kdc-no-bifrost.example.com query admin >/dev/null && break
+		sleep 1
+	done
+	$CMD no-bifrost-client krb5_admin \
+	    -h kdc-no-bifrost.example.com query admin >/dev/null
+	if bifrost_listening; then
+		echo "Bifrost accepted a connection after being disabled" >&2
+		exit 1
+	fi
+
+	echo "Database-controlled Bifrost startup test completed successfully"
+}
+
 expect_krb5_host_show_krb5_conf() {
 	BOX="$1"
 	HOST="$2"
@@ -469,7 +531,10 @@ $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
 
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
+$CMD kdc1 bifrost -l modify_config bifrostd=1
+$DC restart kdc1
 test "$($CMD kdc1 krb5_admin -l master)" = kdc1.example.com
+test_bifrost_switch
 
 #
 # XXXrcd: L4M3 sleep for race, fix later...
