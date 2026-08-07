@@ -1,0 +1,27 @@
+#!/bin/sh
+
+set -eu
+
+MASTER=$(cat /var/heimdal/master)
+CREDS=${KNC_CREDS-}
+AUTHORIZED=0
+
+if [ -s /var/heimdal/krb5_admin.db ]; then
+	REALMS=$(bifrost -l search_realm kind=local)
+else
+	REALMS=$(cat /var/heimdal/realm)
+fi
+
+for realm in $REALMS; do
+	if [ "$CREDS" = "iprop/$MASTER@$realm" ]; then
+		AUTHORIZED=1
+		break
+	fi
+done
+
+if [ "$AUTHORIZED" != 1 ]; then
+	echo "asgard-rsync: $CREDS is not authorized" >&2
+	exit 1
+fi
+
+exec /usr/bin/rsync --server --daemon --config=/etc/rsyncd.conf .
