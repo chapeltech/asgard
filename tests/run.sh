@@ -13,7 +13,11 @@ for test in							\
     /tests/admin-tickets.sh					\
     /tests/admin-owners.sh					\
     /tests/admin-concurrency.sh				\
-    /tests/bifrost-parity.sh
+    /tests/bifrost-parity.sh					\
+    /tests/parity/manifest.sh					\
+    /tests/parity/krb5-admin-matrix.sh				\
+    /tests/parity/krb5-prestash-matrix.sh			\
+    /tests/parity/krb5-keytab-matrix.sh
 do
 	echo
 	echo "===== $test"

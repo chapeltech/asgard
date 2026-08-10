@@ -249,12 +249,12 @@ normal_query_principal() {
 }
 
 normal_query_cmd() {
-	out=$1
+	normal_out=$1
 	shift
-	raw=$(tmp_json)
+	normal_raw=$(tmp_json)
 
-	json_cmd "$raw" "$@"
-	normal_query <"$raw" >"$out"
+	json_cmd "$normal_raw" "$@"
+	normal_query <"$normal_raw" >"$normal_out"
 }
 
 admin_json() {
@@ -310,6 +310,11 @@ http_query_json() {
 	body=$(json_string "$principal")
 
 	bifrost_http QUERY /v1/kdc/query "$body"
+}
+
+http_master_json() {
+
+	bifrost_http QUERY /v1/kdc/master '[]'
 }
 
 unique_name() {
