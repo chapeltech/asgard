@@ -97,3 +97,30 @@ services:
     command: ["/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep infinity & wait"]
     environment:
       KRB5_CONFIG: /etc/krb5.conf
+
+  #
+  # Cross-realm trust matrix.  These are separate from the main
+  # EXAMPLE.COM KDCs so the test can exercise real inter-KDC ticket
+  # exchange without perturbing the normal Asgard realm.
+  xrealm-a:
+    image: asgard/kdc
+    hostname: xrealm-a.example.com
+    command: start-kdc
+    environment: *kdc-environment
+
+  xrealm-b:
+    image: asgard/kdc
+    hostname: xrealm-b.example.com
+    command: start-kdc
+    environment: *kdc-environment
+
+  xrealm-ad:
+    image: asgard/kdc
+    hostname: xrealm-ad.example.com
+    command: start-kdc
+    environment: *kdc-environment
+
+  xrealm-client:
+    image: asgard/client
+    hostname: xrealm-client.example.com
+    command: start-client
