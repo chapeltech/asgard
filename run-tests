@@ -1539,7 +1539,7 @@ test_bifrost_tls bastion /tmp/kx509-admin.pem
 #
 
 slave_ca=$(add_tmpfile)
-$CMD bastion krb5_admin -M -r EXAMPLE.COM ca > "$slave_ca"
+$CMD bastion krb5_admin -M -r EXAMPLE.COM print_ca > "$slave_ca"
 cmp "$ca_pub" "$slave_ca"
 
 $CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com < "$slave_ca"
