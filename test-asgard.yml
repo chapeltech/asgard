@@ -65,6 +65,26 @@ services:
     hostname: client-bifrost.example.com
     command: start-client
 
+  #
+  # These hosts run the Red Hat RPM image.  The test harness provisions
+  # one with krb5_admin/krb5_keytab and one with bifrost, mirroring the
+  # Debian client comparison above.
+  redhat-krb5:
+    profiles: ["redhat"]
+    image: bifrost-redhat-dns
+    hostname: redhat-krb5.example.com
+    command: ["/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep infinity & wait"]
+    environment:
+      KRB5_CONFIG: /etc/krb5.conf
+
+  redhat-bifrost:
+    profiles: ["redhat"]
+    image: bifrost-redhat-dns
+    hostname: redhat-bifrost.example.com
+    command: ["/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep infinity & wait"]
+    environment:
+      KRB5_CONFIG: /etc/krb5.conf
+
 volumes:
   kdc1:
   kdc2:
