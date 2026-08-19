@@ -350,6 +350,53 @@ fi
 EOM
 }
 
+test_bifrost_switch() {
+	typeset CONF PASS
+
+	echo "Testing Asgard with Bifrost disabled"
+
+	if docker run --rm -e ASGARD_BIFROST=invalid asgard/kdc \
+	    start-kdc >/dev/null 2>&1; then
+		echo "start-kdc accepted an invalid ASGARD_BIFROST value" >&2
+		exit 1
+	fi
+
+	$CMD kdc-no-bifrost /cmd setup-master EXAMPLE.COM
+
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		$CMD kdc-no-bifrost test -s /run/asgard/inetd.conf && break
+		sleep 1
+	done
+	$CMD kdc-no-bifrost test -s /run/asgard/inetd.conf
+	$CMD kdc-no-bifrost /bin/sh -c \
+	    '! grep -q "^bifrost[[:space:]]" /run/asgard/inetd.conf'
+	$CMD kdc-no-bifrost /bin/sh -c \
+	    'grep -q "^krb5_admin[[:space:]]" /run/asgard/inetd.conf'
+
+	CONF=$(add_tmpfile)
+	PASS=$(add_tmpfile)
+	print_direct_krb5_conf kdc-no-bifrost EXAMPLE.COM \
+	    kdc-no-bifrost.example.com > "$CONF"
+	$CMD kdc-no-bifrost /cmd create-admin admin |
+	    sed "s,^.*'\(.*\)',\1," > "$PASS"
+	$CMD kdc-no-bifrost krb5_admin -l modify admin \
+	    attributes-=needchange
+
+	$CMD no-bifrost-client /bin/sh -c \
+	    'mkdir -p /etc/krb5 && cat >/etc/krb5.conf' < "$CONF"
+	$CMD no-bifrost-client kinit admin < "$PASS"
+	$CMD no-bifrost-client krb5_admin \
+	    -h kdc-no-bifrost.example.com query admin >/dev/null
+
+	if $CMD no-bifrost-client curl -sS --connect-timeout 2 \
+	    -o /dev/null http://kdc-no-bifrost.example.com:3666/; then
+		echo "Bifrost accepted a connection while disabled" >&2
+		exit 1
+	fi
+
+	echo "Bifrost-disabled Asgard test completed successfully"
+}
+
 expect_krb5_host_show_krb5_conf() {
 	BOX="$1"
 	HOST="$2"
@@ -410,6 +457,75 @@ test_kx509_certificate() {
 	$CMD "$BOX" kdestroy
 	$CMD "$BOX" kinit -C "PEM-FILE:$STORE" "$PRINC"
 	$CMD "$BOX" klist >/dev/null
+}
+
+test_bifrost_tls() {
+	BOX="$1"
+	IDENTITY="$2"
+	UNTRUSTED=/tmp/bifrost-untrusted.pem
+	BODY='["admin@EXAMPLE.COM"]'
+	URL=https://kdc1.example.com:3666/v1/kdc/query
+
+	echo "Testing Bifrost TLS, mTLS, and HTTP Negotiate"
+
+	STATUS=$($CMD "$BOX" curl -sS -o /dev/null -w '%{http_code}' \
+	    --cacert /etc/krb5/ca-pub.pem \
+	    -X QUERY -H 'content-type: application/json' \
+	    -H 'x-bifrost-actor: admin@EXAMPLE.COM' \
+	    -H 'x-bifrost-negotiate: admin@EXAMPLE.COM' \
+	    --data "$BODY" "$URL")
+	if [ "$STATUS" != 401 ]; then
+		echo "Bifrost trusted spoofed identity headers: HTTP $STATUS" >&2
+		exit 1
+	fi
+
+	if $CMD "$BOX" curl -sS --connect-timeout 2 \
+	    -o /dev/null http://kdc1.example.com:3666/v1/kdc/query; then
+		echo "Bifrost accepted plaintext HTTP" >&2
+		exit 1
+	fi
+
+	$CMD "$BOX" curl -sS --fail-with-body \
+	    --cacert /etc/krb5/ca-pub.pem \
+	    --cert "$IDENTITY" --key "$IDENTITY" \
+	    -X QUERY -H 'content-type: application/json' \
+	    --data "$BODY" "$URL" >/dev/null
+
+	$CMD "$BOX" env USER=bifrost-no-certificate \
+	    bifrost -h kdc1.example.com:3666 query admin@EXAMPLE.COM \
+	    >/dev/null
+	$CMD "$BOX" /bin/sh -c \
+	    'cat >/tmp/bifrost-failover.conf' <<'EOM'
+[libdefaults]
+	default_realm = EXAMPLE.COM
+	dns_lookup_kdc = false
+	rdns = false
+
+[realms]
+	EXAMPLE.COM = {
+		kdc = 127.0.0.1
+		kdc = kdc1.example.com
+	}
+EOM
+	$CMD "$BOX" env KRB5_CONFIG=/tmp/bifrost-failover.conf \
+	    USER=bifrost-no-certificate bifrost -r EXAMPLE.COM \
+	    query admin@EXAMPLE.COM >/dev/null
+	$CMD "$BOX" env BIFROST_TLS_CLIENT_IDENTITY="$IDENTITY" \
+	    bifrost -h kdc1.example.com:3666 query admin@EXAMPLE.COM \
+	    >/dev/null
+
+	$CMD "$BOX" rm -f "$UNTRUSTED"
+	$CMD "$BOX" hxtool issue-certificate \
+	    --self-signed --generate-key=rsa --type=https-client \
+	    --subject=CN=untrusted \
+	    --certificate="PEM-FILE:$UNTRUSTED"
+	if $CMD "$BOX" curl -sS --cacert /etc/krb5/ca-pub.pem \
+	    --cert "$UNTRUSTED" --key "$UNTRUSTED" \
+	    -X QUERY -H 'content-type: application/json' \
+	    --data "$BODY" "$URL" >/dev/null 2>&1; then
+		echo "Bifrost accepted an untrusted TLS client certificate" >&2
+		exit 1
+	fi
 }
 
 normalise_client_json() {
@@ -1009,6 +1125,7 @@ $DC up   -d --remove-orphans
 
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
 setup_primary_kdc_model
+test_bifrost_switch
 test_separate_databases
 test_initial_snapshot
 
@@ -1058,6 +1175,7 @@ provision_host_ca bastion
 echo -n Admin passwd:\ ; cat $passwd
 $CMD bastion kinit admin < $passwd
 test_kx509_certificate bastion admin@EXAMPLE.COM admin
+test_bifrost_tls bastion /tmp/kx509-admin.pem
 
 #
 #
