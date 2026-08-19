@@ -1600,6 +1600,32 @@ test_xrealm_same_appliance_trust() {
 	    grep "$XREALM_LOCAL = \\." >/dev/null
 }
 
+test_xrealm_bifrost_package_trust() {
+	PACKAGE=$(add_tmpfile)
+	BPASS=$(add_tmpfile)
+
+	echo "Testing Bifrost package-instantiated xrealm trust"
+
+	printf '%s\n' "bifrost-b-user-password" > "$BPASS"
+	ensure_xrealm_realm xrealm-a "$XREALM_B" \
+	    is_remote=true remote_kind=bifrost
+	ensure_xrealm_trust xrealm-a "$XREALM_A" "$XREALM_B"
+	$CMD xrealm-a bifrost -l export_realm_trust \
+	    "$XREALM_A" "$XREALM_B" > "$PACKAGE"
+	assert_xrealm_hdb_principal xrealm-a "$XREALM_AB_TRUST"
+
+	ensure_xrealm_realm xrealm-b "$XREALM_A" \
+	    is_remote=true remote_kind=bifrost
+	ensure_xrealm_trust xrealm-b "$XREALM_A" "$XREALM_B"
+	$CMD xrealm-b bifrost -l import_realm_trust \
+	    "$XREALM_A" "$XREALM_B" < "$PACKAGE"
+	assert_xrealm_hdb_principal xrealm-b "$XREALM_AB_TRUST"
+
+	create_local_user xrealm-b "buser@$XREALM_B" "$(cat "$BPASS")"
+	verify_xrealm_service_ticket "bifrost package" \
+	    "buser@$XREALM_B" "$BPASS" /tmp/xrealm-bifrost.ccache
+}
+
 test_xrealm_trust_matrix() {
 	echo "Starting xrealm trust matrix"
 
@@ -1614,6 +1640,7 @@ test_xrealm_trust_matrix() {
 	ensure_xrealm_realm xrealm-ad "$XREALM_AD"
 
 	test_xrealm_same_appliance_trust
+	test_xrealm_bifrost_package_trust
 
 	echo "xrealm trust matrix completed successfully"
 }
