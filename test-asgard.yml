@@ -96,7 +96,40 @@ services:
     environment:
       KRB5_CONFIG: /etc/krb5.conf
 
+  #
+  # Cross-realm trust matrix.  These are separate from the main
+  # EXAMPLE.COM KDCs so the test can exercise real inter-KDC ticket
+  # exchange without perturbing the normal Asgard realm.
+  xrealm-a:
+    image: asgard/kdc
+    hostname: xrealm-a.example.com
+    command: start-kdc
+    volumes:
+      - xrealm-a:/var/heimdal
+
+  xrealm-b:
+    image: asgard/kdc
+    hostname: xrealm-b.example.com
+    command: start-kdc
+    volumes:
+      - xrealm-b:/var/heimdal
+
+  xrealm-ad:
+    image: asgard/kdc
+    hostname: xrealm-ad.example.com
+    command: start-kdc
+    volumes:
+      - xrealm-ad:/var/heimdal
+
+  xrealm-client:
+    image: asgard/client
+    hostname: xrealm-client.example.com
+    command: start-client
+
 volumes:
   kdc1:
   kdc2:
   kdc-no-bifrost:
+  xrealm-a:
+  xrealm-b:
+  xrealm-ad:
