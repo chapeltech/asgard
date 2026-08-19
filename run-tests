@@ -439,6 +439,8 @@ test_bifrost_switch() {
 }
 
 expect_krb5_host_show_krb5_conf() {
+	typeset BOX HOST OUT
+
 	BOX="$1"
 	HOST="$2"
 	OUT=$(add_tmpfile)
