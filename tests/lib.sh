@@ -312,6 +312,11 @@ http_query_json() {
 	bifrost_http QUERY /v1/kdc/query "$body"
 }
 
+http_master_json() {
+
+	bifrost_http QUERY /v1/kdc/master '[]'
+}
+
 unique_name() {
 	prefix=$1
 	printf 'bf-%s-%s' "$prefix" "$$"
