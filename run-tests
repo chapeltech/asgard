@@ -98,6 +98,15 @@ add_tmpfile() {
 	echo $TMP
 }
 
+create_local_user() {
+	BOX="$1"
+	PRINCIPAL="$2"
+	PASSWORD="$3"
+
+	$CMD "$BOX" krb5_admin -l create_user "$PRINCIPAL" "$PASSWORD"
+	$CMD "$BOX" krb5_admin -l modify "$PRINCIPAL" attributes-=needchange
+}
+
 build_redhat_images() {
 
 	[ "$RED_HAT" = 1 ] || return 0
@@ -1341,6 +1350,157 @@ EOM
 	    klist >/dev/null
 }
 
+XREALM_A=A.XREALM.EXAMPLE
+XREALM_B=B.XREALM.EXAMPLE
+XREALM_AD=AD.XREALM.EXAMPLE
+XREALM_LOCAL=LOCAL.XREALM.EXAMPLE
+XREALM_SERVICE=HTTP/xrealm-a.example.com@$XREALM_A
+XREALM_AB_TRUST=krbtgt/$XREALM_A@$XREALM_B
+XREALM_AD_TRUST=krbtgt/$XREALM_A@$XREALM_AD
+
+wait_for_xrealm_kdc() {
+	BOX="$1"
+	REALM="$2"
+
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		if $CMD "$BOX" krb5_admin -l list "krbtgt/$REALM" \
+		    >/dev/null 2>&1; then
+			return
+		fi
+		sleep 1
+	done
+
+	echo "$BOX: KDC for $REALM did not become ready" 1>&2
+	exit 1
+}
+
+setup_xrealm_master() {
+	BOX="$1"
+	REALM="$2"
+	HOST="$BOX.example.com"
+
+	echo "Setting up xrealm KDC $BOX for $REALM"
+	$CMD "$BOX" /cmd setup-master "$REALM"
+	$CMD "$BOX" bifrost -l modify_config bifrostd=1
+	$DC restart "$BOX"
+	wait_for_xrealm_kdc "$BOX" "$REALM"
+	ensure_xrealm_realm "$BOX" "$REALM"
+	if $CMD "$BOX" bifrost -l query_host "$HOST" | \
+	    grep '^realm:' >/dev/null; then
+		/bin/true
+	else
+		$CMD "$BOX" bifrost -l create_host "$HOST" realm="$REALM"
+	fi
+	$CMD "$BOX" bifrost -l modify_realm "$REALM" \
+	    kdc+="$HOST" master="$HOST"
+}
+
+ensure_xrealm_realm() {
+	BOX="$1"
+	REALM="$2"
+	shift 2
+
+	if $CMD "$BOX" bifrost -l query_realm "$REALM" \
+	    >/dev/null 2>&1; then
+		return
+	fi
+
+	$CMD "$BOX" bifrost -l create_realm "$REALM" "$@"
+}
+
+ensure_xrealm_trust() {
+	BOX="$1"
+	REALM="$2"
+	TRUSTED="$3"
+
+	if $CMD "$BOX" bifrost -l query_realm "$REALM" | \
+	    grep "^trust: $TRUSTED\$" >/dev/null; then
+		return
+	fi
+
+	$CMD "$BOX" bifrost -l modify_realm "$REALM" "trust+=$TRUSTED"
+}
+
+assert_xrealm_hdb_principal() {
+	BOX="$1"
+	PRINC="$2"
+
+	$CMD "$BOX" bifrost -l query "$PRINC" | grep '^Current kvno:' >/dev/null
+}
+
+write_xrealm_client_conf() {
+	$CMD xrealm-client /bin/sh -c 'cat >/tmp/xrealm-krb5.conf' <<EOM
+[libdefaults]
+	default_realm = $XREALM_B
+	rdns = false
+	dns_lookup_kdc = false
+
+[realms]
+	$XREALM_A = {
+		kdc = xrealm-a.example.com
+	}
+	$XREALM_B = {
+		kdc = xrealm-b.example.com
+	}
+	$XREALM_AD = {
+		kdc = xrealm-ad.example.com
+	}
+
+[domain_realm]
+	xrealm-a.example.com = $XREALM_A
+	xrealm-b.example.com = $XREALM_B
+	xrealm-ad.example.com = $XREALM_AD
+	xrealm-client.example.com = $XREALM_B
+
+[capaths]
+	$XREALM_B = {
+		$XREALM_A = .
+	}
+	$XREALM_AD = {
+		$XREALM_A = .
+	}
+	$XREALM_A = {
+		$XREALM_B = .
+		$XREALM_AD = .
+	}
+EOM
+
+	$CMD xrealm-client cp /tmp/xrealm-krb5.conf /etc/krb5.conf
+}
+
+verify_xrealm_service_ticket() {
+	NAME="$1"
+	PRINC="$2"
+	PASSFILE="$3"
+	CCACHE="$4"
+
+	echo "Testing xrealm service ticket: $NAME"
+	$CMD xrealm-client env KRB5_CONFIG=/tmp/xrealm-krb5.conf \
+	    KRB5CCNAME="FILE:$CCACHE" kdestroy >/dev/null 2>&1 || /bin/true
+	$CMD xrealm-client env KRB5_CONFIG=/tmp/xrealm-krb5.conf \
+	    KRB5CCNAME="FILE:$CCACHE" kinit "$PRINC" < "$PASSFILE"
+	$CMD xrealm-client env KRB5_CONFIG=/tmp/xrealm-krb5.conf \
+	    KRB5CCNAME="FILE:$CCACHE" kgetcred "$XREALM_SERVICE"
+	$CMD xrealm-client env KRB5_CONFIG=/tmp/xrealm-krb5.conf \
+	    KRB5CCNAME="FILE:$CCACHE" klist | \
+	    grep "$XREALM_SERVICE" >/dev/null
+}
+
+test_xrealm_trust_matrix() {
+	echo "Starting xrealm trust matrix"
+
+	setup_xrealm_master xrealm-a "$XREALM_A"
+	setup_xrealm_master xrealm-b "$XREALM_B"
+	setup_xrealm_master xrealm-ad "$XREALM_AD"
+	write_xrealm_client_conf
+
+	ensure_xrealm_realm xrealm-a "$XREALM_A"
+	ensure_xrealm_realm xrealm-b "$XREALM_B"
+	ensure_xrealm_realm xrealm-ad "$XREALM_AD"
+
+	echo "xrealm trust matrix completed successfully"
+}
+
 /bin/sh tests/asgard.sh ./asgard
 
 if [ -n "${ASGARD_PLATFORM:-}" ]; then
@@ -1363,6 +1523,7 @@ $CMD kdc1 bifrost -l modify_config bifrostd=1
 $DC restart kdc1
 test "$($CMD kdc1 krb5_admin -l master)" = kdc1.example.com
 test_bifrost_switch
+test_xrealm_trust_matrix
 
 #
 # XXXrcd: L4M3 sleep for race, fix later...
