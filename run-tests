@@ -921,6 +921,75 @@ setup_primary_kdc_model() {
 	    kdc+=kdc1.example.com master=kdc1.example.com
 }
 
+test_initial_snapshot() {
+
+	echo "Testing initial SQLite online snapshot"
+
+	$CMD kdc1 env ASGARD_SNAPSHOT_HOUR=00 ASGARD_SNAPSHOT_DAY=1 \
+	    /cmd snapshot
+
+	$CMD kdc1 /bin/sh -s <<'EOM'
+set -e
+SNAP=/var/heimdal/snaps/hour.00/krb5_admin.db
+
+test -s "$SNAP"
+test ! -e "$SNAP-wal"
+test ! -e "$SNAP-shm"
+test -s /var/heimdal/snaps/hour.00/krb5.conf.d/EXAMPLE_COM.conf
+test "$(sqlite3 "$SNAP" 'PRAGMA quick_check;')" = ok
+test "$(sqlite3 "$SNAP" \
+    "SELECT COUNT(*) FROM hosts WHERE name = 'kdc1.example.com'")" = 1
+test "$(sqlite3 "$SNAP" \
+    'SELECT COUNT(*) FROM krb5_admin_simple_acls')" = 0
+test "$(sqlite3 "$SNAP" \
+    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'Principal'")" = 0
+grep '^slot=hour.00$' /var/heimdal/snaps/hour.00/manifest >/dev/null
+EOM
+}
+
+test_snapshot_rotation_after_admin() {
+
+	echo "Testing SQLite snapshot hourly replacement and daily promotion"
+
+	$CMD kdc1 env ASGARD_SNAPSHOT_HOUR=00 ASGARD_SNAPSHOT_DAY=1 \
+	    /cmd snapshot
+	$CMD kdc1 env ASGARD_SNAPSHOT_HOUR=01 ASGARD_SNAPSHOT_DAY=1 \
+	    /cmd snapshot
+
+	$CMD kdc1 /bin/sh -s <<'EOM'
+set -e
+HOUR0=/var/heimdal/snaps/hour.00/krb5_admin.db
+HOUR1=/var/heimdal/snaps/hour.01/krb5_admin.db
+DAY=/var/heimdal/snaps/day.1/krb5_admin.db
+
+for snap in "$HOUR0" "$HOUR1" "$DAY"; do
+	test -s "$snap"
+	test ! -e "$snap-wal"
+	test ! -e "$snap-shm"
+	test "$(sqlite3 "$snap" 'PRAGMA quick_check;')" = ok
+	sqlite3 "$snap" \
+	    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'db_version'" |
+	    grep '^1$' >/dev/null
+	sqlite3 "$snap" \
+	    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hosts'" |
+	    grep '^1$' >/dev/null
+	test "$(sqlite3 "$snap" \
+	    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'Entry'")" = 0
+done
+
+test "$(sqlite3 "$DAY" \
+    'SELECT COUNT(*) FROM krb5_admin_simple_acls')" = 0
+test "$(sqlite3 "$HOUR0" \
+    'SELECT COUNT(*) FROM krb5_admin_simple_acls')" -ge 1
+test "$(sqlite3 "$HOUR1" \
+    'SELECT COUNT(*) FROM krb5_admin_simple_acls')" -ge 1
+
+grep '^slot=hour.00$' /var/heimdal/snaps/hour.00/manifest >/dev/null
+grep '^slot=hour.01$' /var/heimdal/snaps/hour.01/manifest >/dev/null
+grep '^slot=hour.00$' /var/heimdal/snaps/day.1/manifest >/dev/null
+EOM
+}
+
 /bin/sh tests/asgard-create-slave.sh ./asgard-create-slave
 
 if [ -n "${ASGARD_PLATFORM:-}" ]; then
@@ -941,6 +1010,7 @@ $DC up   -d --remove-orphans
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
 setup_primary_kdc_model
 test_separate_databases
+test_initial_snapshot
 
 #
 # XXXrcd: L4M3 sleep for race, fix later...
@@ -960,6 +1030,7 @@ $CMD kdc1 /cmd print-ca		> $ca_pub
 $CMD kdc1 /cmd create-admin admin	| \
 	sed "s,^.*'\(.*\)',\1," > $passwd
 $CMD kdc1 krb5_admin -l modify admin attributes-=needchange
+test_snapshot_rotation_after_admin
 
 for verb in							\
 	add_acl add_label bind_host create create_appid create_group	\

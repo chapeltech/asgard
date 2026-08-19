@@ -108,7 +108,9 @@ snapshot_once() {
 		exit 1
 	fi
 
-	copy_if_present /var/heimdal/krb5.conf "$tmp"
+	if [ -d /var/heimdal/krb5.conf.d ]; then
+		cp -Rp /var/heimdal/krb5.conf.d "$tmp"
+	fi
 	copy_if_present /var/heimdal/realm "$tmp"
 	copy_if_present /var/heimdal/master "$tmp"
 	copy_if_present /var/heimdal/ca-pub.pem "$tmp"
