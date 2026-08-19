@@ -1,3 +1,13 @@
+x-systemd-container: &systemd-container
+  privileged: true
+  cgroup: private
+  tmpfs:
+    - /run
+    - /run/lock
+  volumes:
+    - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  stop_signal: SIGRTMIN+3
+
 services:
   kdc1:
     image: asgard/kdc
@@ -18,7 +28,6 @@ services:
     hostname: kdc-no-bifrost.example.com
     command: start-kdc
     environment:
-      <<: *kdc-environment
       ASGARD_BIFROST: "0"
     volumes:
       - kdc-no-bifrost:/var/heimdal
@@ -79,6 +88,13 @@ services:
     hostname: client-bifrost.example.com
     command: start-client
 
+  debian-systemd:
+    <<: *systemd-container
+    image: asgard/client
+    hostname: debian-systemd.example.com
+    entrypoint: ["/usr/lib/systemd/systemd"]
+    command: []
+
   #
   # These hosts run the Red Hat RPM image.  The test harness provisions
   # one with krb5_admin/krb5_keytab and one with bifrost, mirroring the
@@ -107,7 +123,6 @@ services:
     image: asgard/kdc
     hostname: xrealm-a.example.com
     command: start-kdc
-    environment: *kdc-environment
     volumes:
       - xrealm-a:/var/heimdal
 
@@ -115,7 +130,6 @@ services:
     image: asgard/kdc
     hostname: xrealm-b.example.com
     command: start-kdc
-    environment: *kdc-environment
     volumes:
       - xrealm-b:/var/heimdal
 
@@ -123,7 +137,6 @@ services:
     image: asgard/kdc
     hostname: xrealm-ad.example.com
     command: start-kdc
-    environment: *kdc-environment
     volumes:
       - xrealm-ad:/var/heimdal
 
@@ -138,7 +151,6 @@ services:
     image: asgard/kdc
     hostname: multi-kdc.example.com
     command: start-kdc
-    environment: *kdc-environment
     volumes:
       - multi-kdc:/var/heimdal
 
