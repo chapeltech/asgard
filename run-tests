@@ -1659,6 +1659,121 @@ EOM
 	echo "cross-realm prestashed credentials test completed successfully"
 }
 
+configure_windows_xrealm_prestash() {
+	$CMD xrealm-a /bin/sh -c \
+	    'cat >/etc/krb5/krb5_admind.conf && chmod 600 /etc/krb5/krb5_admind.conf' <<EOM
+\$allow_fetch = 1;
+\$prestash_xrealm{"$XREALM_A"} = ["$XREALM_AD"];
+1;
+EOM
+	$CMD xrealm-a /bin/sh -c \
+	    'kill $(pidof krb5_admind) 2>/dev/null || true;
+	    kill $(pidof prefork) 2>/dev/null || true'
+}
+
+install_windows_xrealm_keytab() {
+	MACHINE="$1"
+	PASSWORD=windows-machine-password
+
+	$CMD xrealm-ad krb5_admin -l remove "$MACHINE" >/dev/null 2>&1 || true
+	$CMD xrealm-ad krb5_admin -l create "$MACHINE"
+	$CMD xrealm-ad krb5_admin -l change_passwd "$MACHINE" "$PASSWORD"
+	$CMD xrealm-ad krb5_admin -l modify "$MACHINE" \
+	    attributes+=requires_preauth attributes-=needchange
+	KVNO=$($CMD xrealm-ad krb5_admin -l query "$MACHINE" | \
+	    awk '/^Current kvno:/ { print $3 }')
+
+	$CMD xrealm-client rm -f /etc/krb5.keytab
+	$CMD xrealm-client bifrost keytab -k FILE:/etc/krb5.keytab \
+	    add password -V "$KVNO" -e aes256-cts "$PASSWORD" "$MACHINE"
+	$CMD xrealm-client chmod 600 /etc/krb5.keytab
+	$CMD xrealm-client bifrost keytab -p root list | grep -F "$MACHINE" \
+	    >/dev/null
+	if $CMD xrealm-client bifrost keytab -p root list | \
+	    grep -F 'host/' >/dev/null; then
+		echo "Windows prestash keytab unexpectedly contains a host key" >&2
+		exit 1
+	fi
+}
+
+configure_windows_xrealm_client() {
+	MACHINE="$1"
+
+	$CMD xrealm-a /cmd print-ca | $CMD xrealm-client /bin/sh -c \
+	    'mkdir -p /etc/krb5 && cat >/etc/krb5/ca-pub.pem'
+	$CMD xrealm-client /bin/sh -c \
+	    'cat >/etc/krb5/krb5_hostd.conf' <<EOM
+\$tixdir = ['/var/spool/tickets'];
+\$certdir = ['/var/spool/certs'];
+\$use_fetch = 1;
+@prestash_realms = ({
+	realm => '$XREALM_A',
+	from_princ => '$MACHINE',
+});
+1;
+EOM
+
+	$CMD xrealm-client cp \
+	    /tmp/xrealm-keytab-bifrost/etc/krb5.keytab \
+	    /etc/krb5.hostd.keytab
+	$CMD xrealm-client sed -i \
+	    's#/usr/bin/knc -iS /run/krb5_hostd#/usr/bin/env env KRB5_KTNAME=FILE:/etc/krb5.hostd.keytab /usr/bin/knc -iS /run/krb5_hostd#' \
+	    /etc/client-inetd.conf
+	$CMD xrealm-client pkill -HUP inetd
+}
+
+remove_windows_xrealm_prestash() {
+	$CMD xrealm-client rm -rf "/var/spool/tickets/@$XREALM_A" \
+	    "/var/spool/certs/@$XREALM_A"
+}
+
+verify_windows_xrealm_prestash() {
+	PRINC="$1"
+	TICKET="/var/spool/tickets/@$XREALM_A/www-data"
+	CERT="/var/spool/certs/@$XREALM_A/www-data"
+	CERT_CCACHE=/tmp/windows-xrealm-prestash-cert.ccache
+
+	$CMD xrealm-client test -s "$TICKET" -a -s "$CERT"
+	$CMD xrealm-client su -s /bin/sh -c \
+	    "KRB5CCNAME=FILE:$TICKET klist | grep -F '$PRINC' >/dev/null" \
+	    www-data
+	$CMD xrealm-client hxtool verify --missing-revoke \
+	    "cert:PEM-FILE:$CERT" "chain:PEM-FILE:$CERT" \
+	    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
+	$CMD xrealm-client su -s /bin/sh -c \
+	    "KRB5CCNAME=FILE:$CERT_CCACHE kdestroy >/dev/null 2>&1 || true;
+	    KRB5CCNAME=FILE:$CERT_CCACHE kinit -C 'PEM-FILE:$CERT' '$PRINC' &&
+	    KRB5CCNAME=FILE:$CERT_CCACHE klist | grep -F '$PRINC' >/dev/null" \
+	    www-data
+}
+
+test_windows_xrealm_prestash() {
+	HOST=xrealm-client.example.com
+	MACHINE="xrealm-client\$@$XREALM_AD"
+	PRINC="www-data@$XREALM_A"
+
+	echo "Testing Windows machine-account cross-realm prestash"
+
+	configure_windows_xrealm_prestash
+	$CMD xrealm-a bifrost -l modify_host "$HOST" realm="$XREALM_AD"
+	install_windows_xrealm_keytab "$MACHINE"
+	configure_windows_xrealm_client "$MACHINE"
+
+	remove_windows_xrealm_prestash
+	$CMD xrealm-client krb5_prestash fetch
+	verify_windows_xrealm_prestash "$PRINC"
+
+	remove_windows_xrealm_prestash
+	$CMD xrealm-client krb5_prestash fetch "$XREALM_A"
+	verify_windows_xrealm_prestash "$PRINC"
+
+	remove_windows_xrealm_prestash
+	$CMD xrealm-a krb5_admin -l refresh_ticket "$PRINC" "$HOST"
+	verify_windows_xrealm_prestash "$PRINC"
+
+	echo "Windows cross-realm prestash test completed successfully"
+}
+
 test_xrealm_same_appliance_trust() {
 	echo "Testing same-appliance bifrost xrealm trust"
 
@@ -1762,6 +1877,7 @@ test_xrealm_trust_matrix() {
 	test_xrealm_same_appliance_trust
 	test_xrealm_bifrost_package_trust
 	test_xrealm_password_trust
+	test_windows_xrealm_prestash
 
 	echo "xrealm trust matrix completed successfully"
 }
