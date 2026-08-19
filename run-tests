@@ -2,20 +2,28 @@
 
 set -e
 
+RED_HAT=1
+RED_HAT_BUILD=1
+KEEP_ON_FAIL=0
+ATTACH=0
 DNS=0
 DNSSEC=0
 
 usage() {
 
 	cat >&2 <<'EOM'
-usage: run-tests [-D] [-S]
+usage: run-tests [-a] [-k] [-B] [-R] [-D] [-S]
 
+  -a  attach to the compose stack after tests complete
+  -k  keep the compose stack on failure
+  -B  skip building the Red Hat package image
+  -R  skip the Red Hat package-image hosts and tests
   -D  enable KDC-hosted authoritative DNS
   -S  enable DNSSEC tests; implies -D
 EOM
 }
 
-OPTS=$(getopt -o '+DSh' -- "$@") || {
+OPTS=$(getopt -o '+akBRDSh' -- "$@") || {
 	usage
 	exit 2
 }
@@ -23,6 +31,22 @@ eval set -- "$OPTS"
 
 while true; do
 	case "$1" in
+	-a)
+		ATTACH=1
+		shift
+		;;
+	-k)
+		KEEP_ON_FAIL=1
+		shift
+		;;
+	-B)
+		RED_HAT_BUILD=0
+		shift
+		;;
+	-R)
+		RED_HAT=0
+		shift
+		;;
 	-D)
 		DNS=1
 		shift
@@ -54,7 +78,13 @@ if [ "$DNS" = 1 ]; then
 	COMPOSE_FILES="$COMPOSE_FILES -f test-asgard-dns.yml"
 fi
 
-DC="docker compose $COMPOSE_FILES"
+if [ "$RED_HAT" = 1 ]; then
+	COMPOSE_PROFILES="--profile redhat"
+else
+	COMPOSE_PROFILES=
+fi
+
+DC="docker compose $COMPOSE_FILES $COMPOSE_PROFILES"
 CMD="$DC exec -T"
 
 #
@@ -75,11 +105,20 @@ create_local_principal() {
 	$CMD "$BOX" krb5_admin -l create "$PRINCIPAL"
 }
 
+build_redhat_images() {
+
+	[ "$RED_HAT" = 1 ] || return 0
+	[ "$RED_HAT_BUILD" = 1 ] || return 0
+
+	echo "Building Red Hat package image bifrost-redhat-dns"
+	../bifrost/packaging/dev/redhat-dns/build-image bifrost-redhat-dns
+}
+
 bail() {
 	STATUS=$?
 
 	rm -f $TMP_FILES
-	if [ $STATUS -ne 0 ] && [ "${ASGARD_KEEP_ON_FAIL:-}" = 1 ]; then
+	if [ $STATUS -ne 0 ] && [ "$KEEP_ON_FAIL" = 1 ]; then
 		exit $STATUS
 	fi
 	$DC down -v --remove-orphans
@@ -937,7 +976,17 @@ EOM
 /bin/sh tests/cmd-keytabs.sh ./scripts/cmd
 /bin/sh tests/cmd-admins.sh ./scripts/cmd
 
-docker buildx bake --allow=fs.read=../bifrost
+if [ -n "${ASGARD_PLATFORM:-}" ]; then
+	docker buildx bake \
+	    --set "*.platform=$ASGARD_PLATFORM" \
+	    --allow=fs.read=../bifrost \
+	    --allow=fs.read=../krb5_admin test
+else
+	docker buildx bake \
+	    --allow=fs.read=../bifrost \
+	    --allow=fs.read=../krb5_admin test
+fi
+build_redhat_images
 
 $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
@@ -1132,6 +1181,6 @@ done
 
 echo "Web Server test completed successfully"
 
-if [ "${ASGARD_ATTACH:-}" = 1 ]; then
+if [ "$ATTACH" = 1 ]; then
 	$DC up
 fi
