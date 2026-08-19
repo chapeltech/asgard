@@ -1,0 +1,6 @@
+# command|coverage
+fetch|scenario
+insert|scenario
+query|scenario
+refresh|scenario
+remove|scenario
