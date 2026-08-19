@@ -1480,6 +1480,7 @@ setup_asgard_dns() {
 	dns_host mail		172.30.0.27
 	dns_host sshcluster-a	172.30.0.28
 	dns_host sshcluster-b	172.30.0.29
+	dns_host debian-systemd	172.30.0.30
 
 	if [ "$RED_HAT" = 1 ]; then
 		dns_host redhat-krb5	172.30.0.25
