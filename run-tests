@@ -441,12 +441,50 @@ test_prestashed_tickets() {
 	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
 }
 
+test_separate_databases() {
+
+	echo "Testing separate Heimdal and administrative databases"
+
+	$CMD kdc1 /bin/sh -s <<'EOM'
+set -e
+HDB=/var/heimdal/heimdal.db
+ADMIN=/var/kerberos/krb5_admin.db
+
+test -f "$HDB"
+test -f "$ADMIN"
+test ! -L "$HDB"
+test ! -L "$ADMIN"
+test ! "$HDB" -ef "$ADMIN"
+test "$(sqlite3 "$ADMIN" 'PRAGMA quick_check;')" = ok
+grep 'dbname = db:/var/heimdal/heimdal' /etc/krb5.conf >/dev/null
+if sqlite3 "$HDB" 'PRAGMA quick_check;' >/dev/null 2>&1; then
+	echo "$HDB is unexpectedly a SQLite database" >&2
+	exit 1
+fi
+
+for table in db_version hosts appids; do
+	sqlite3 "$ADMIN" \
+	    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '$table'" |
+	    grep '^1$' >/dev/null
+done
+
+test "$(sqlite3 "$ADMIN" \
+    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'Principal'")" = 0
+EOM
+
+	$CMD kdc1 krb5_admin -l query \
+	    krbtgt/EXAMPLE.COM@EXAMPLE.COM >/dev/null
+	$CMD kdc1 krb5_admin -l list \* >/dev/null
+	$CMD kdc1 bifrost -l list_actions >/dev/null
+}
+
 docker buildx bake --allow=fs.read=../bifrost
 
 $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
 
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
+test_separate_databases
 
 #
 # XXXrcd: L4M3 sleep for race, fix later...
