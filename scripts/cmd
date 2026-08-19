@@ -59,20 +59,23 @@ prepare() {
 	done
 
 	cp /var/heimdal/ca-pub.pem /etc/krb5
-	ln -sf ../var/heimdal/krb5.conf /etc/krb5.conf
 }
 
-mk_krb5_conf() {
-	REALM="$(cat /var/heimdal/realm)"
+realm_conf_name() {
+
+	printf '%s\n' "$1" | tr . _
+}
+
+mk_krb5_realm_conf() {
+	TYPE="$1"
+	REALM="$2"
 	MASTER="$(cat /var/heimdal/master)"
 
-	[ "$1" = master ] && MASTER=127.0.0.1
+	[ "$TYPE" = master ] && MASTER=127.0.0.1
 
 	cat <<EOM
 [libdefaults]
 	default_realm = $REALM
-	rdns = false
-	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
 
 [realms]
 	$REALM = {
@@ -81,24 +84,10 @@ mk_krb5_conf() {
 	}
 EOM
 
-	if [ "$1" != master -a "$1" != slave ]; then
-		return
-	fi
+	[ "$TYPE" = client ] && return
 
 	cat <<EOM
 [kdc]
-	database = {
-		dbname = db:/var/heimdal/heimdal
-	}
-	require-preauth = yes
-	check-ticket-addresses = false
-	enable-pkinit = yes
-	allow-anonymous = yes
-	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
-	pkinit_identity = FILE:/var/heimdal/kdc-priv.pem
-
-	enable_kx509 = yes
-
 	realms = {
 		$REALM = {
 			kx509 = {
@@ -119,11 +108,27 @@ EOM
 			}
 		}
 	}
-
-[logging]
-	kdc = 0-3/SYSLOG
 EOM
+}
 
+write_krb5_conf() {
+	DIR=/var/heimdal/krb5.conf.d
+	REALM="$(cat /var/heimdal/realm)"
+	FILE="$DIR/$(realm_conf_name "$REALM").conf"
+
+	mkdir -p "$DIR"
+	mk_krb5_realm_conf "$1" "$REALM" > "$FILE.new"
+	mv "$FILE.new" "$FILE"
+}
+
+mk_krb5_client_conf() {
+
+	cat <<EOM
+[libdefaults]
+	rdns = false
+	pkinit_anchors = FILE:/etc/krb5/ca-pub.pem
+EOM
+	mk_krb5_realm_conf "$1" "$(cat /var/heimdal/realm)"
 }
 
 create_admin() {
@@ -154,7 +159,7 @@ print_krb5_conf() {
 
 	[ -f "$SETUP_FILE" ] || usage "KDC is not setup yet"
 
-	mk_krb5_conf client
+	mk_krb5_client_conf client
 }
 
 start_kdc() {
@@ -199,7 +204,7 @@ setup_master() {
 	echo "$REALM"	> /var/heimdal/realm
 	hostname	> /var/heimdal/master
 
-	mk_krb5_conf master > /var/heimdal/krb5.conf
+	write_krb5_conf master
 
 	kadmin -l init --realm-max-ticket-life=1d			\
 		       --realm-max-renewable-life=1w			\
@@ -253,7 +258,7 @@ setup_slave() {
 	echo "$REALM"	> /var/heimdal/realm
 	echo "$MASTER"	> /var/heimdal/master
 
-	mk_krb5_conf slave > /var/heimdal/krb5.conf
+	write_krb5_conf slave
 
 	krb5_keytab iprop
 
