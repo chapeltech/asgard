@@ -115,6 +115,16 @@ EOM
 [kdc]
 EOM
 
+	if [ "$R" = "$REALM" -a -n "${ASGARD_KDC_PROCESSES:-}" ]; then
+		case "$ASGARD_KDC_PROCESSES" in
+		*[!0-9]*|0|'')
+			echo "ASGARD_KDC_PROCESSES must be a positive integer" >&2
+			exit 1
+			;;
+		esac
+		echo "	num-kdc-processes = $ASGARD_KDC_PROCESSES"
+	fi
+
 	DN="$(realm_dn "$R")"
 	cat <<EOM
 	realms = {
