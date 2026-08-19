@@ -138,6 +138,18 @@ EOM
 	    </dev/null
 }
 
+provision_redhat_services() {
+	BOX="$1"
+
+	$CMD "$BOX" /bin/sh -c \
+	    'grep -v -E "^(bifrost|krb5_admin)[[:space:]]" /etc/services \
+	    > /tmp/services.$$ &&
+	    printf "bifrost 3666/tcp\nkrb5_admin 2666/tcp\n" \
+	    >> /tmp/services.$$ &&
+	    cat /tmp/services.$$ > /etc/services &&
+	    rm -f /tmp/services.$$'
+}
+
 provision_host() {
 	BOX="$1"
 
@@ -165,6 +177,20 @@ provision_host_bifrost() {
 
 	$CMD "$BOX" bifrost keytab get
 	provision_host_hostd_conf "$BOX"
+}
+
+provision_host_bifrost_keytab() {
+	BOX="$1"
+
+	provision_host_krb5_conf "$BOX"
+	provision_host_ca "$BOX"
+
+	BOOT=$($CMD "$BOX" bifrost keytab get bootstrap/RANDOM)
+
+	$CMD bastion bifrost bind_host			\
+	    $BOX.example.com $BOOT
+
+	$CMD "$BOX" bifrost keytab get
 }
 
 wait_for_socket() {
@@ -574,6 +600,17 @@ compare_test_clients() {
 	compare_client_prestashed_tickets
 }
 
+test_redhat_dns_cli() {
+	BOX="$1"
+
+	echo "Testing Red Hat packaged bifrost DNS CLI on $BOX"
+
+	$CMD "$BOX" /bin/sh -c \
+	    'bifrost-dns-demo-reset >/dev/null &&
+	    bifrost -l -S "$BIFROST_DEMO_DB" query_domain example.com >/dev/null &&
+	    bifrost -l -S "$BIFROST_DEMO_DB" dns_zone example.com >/dev/null'
+}
+
 test_systemd_hostd_units() {
 	BOX="$1"
 
@@ -625,6 +662,41 @@ test_systemd_hostd_units() {
 	        dpkg-query -S "$unitdir/krb5-hostd.service" |
 	            grep -F krb5-hostd >/dev/null
 	    fi'
+}
+
+test_redhat_clients() {
+
+	[ "$RED_HAT" = 1 ] || return 0
+
+	echo "Starting Red Hat package image tests"
+	test_systemd_hostd_units redhat-krb5
+	$CMD redhat-krb5 /bin/sh -c '
+	    deps=$(ldd /usr/bin/knc) &&
+	    printf "%s\n" "$deps" | grep -F libgssapi_krb5.so.2 >/dev/null &&
+	    ! printf "%s\n" "$deps" | grep -F libgssapi.so.3 >/dev/null'
+
+	provision_redhat_services redhat-krb5
+	provision_host redhat-krb5
+	provision_host_hostd_conf redhat-krb5
+	$CMD redhat-krb5 bifrost -l host list_keytab root >/dev/null
+	$CMD redhat-krb5 krb5_keytab >/dev/null
+
+	provision_redhat_services redhat-bifrost
+	provision_host_bifrost_keytab redhat-bifrost
+	$CMD redhat-bifrost bifrost -l host list_keytab root >/dev/null
+	$CMD redhat-bifrost krb5_keytab >/dev/null
+
+	compare_client_command "Red Hat local bifrost root keytab"	\
+	    redhat-krb5 redhat-bifrost				\
+	    bifrost -J -l host list_keytab root
+	$CMD redhat-krb5 useradd --system --no-create-home www-data || /bin/true
+	ensure_www_data_appid
+	$CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
+	    redhat-krb5.example.com || /bin/true
+	test_prestash_systemd_fetch redhat-krb5 www-data
+	test_redhat_dns_cli redhat-bifrost
+
+	echo "Red Hat package image tests completed successfully"
 }
 
 ensure_www_data_appid() {
@@ -747,6 +819,7 @@ provision_host_bifrost client-bifrost
 test_bifrost_host_cli client-bifrost
 
 compare_test_clients
+test_redhat_clients
 
 $CMD client-krb5 kinit user < $passwd
 $CMD client-bifrost kinit user < $passwd
