@@ -95,7 +95,7 @@ TEST_LOG=$LOG TEST_STATE=$STATE PATH="$STUBS:$PATH" \
 
 grep -Fx '# asgard-create-slave: EXAMPLE.COM kdc2.example.com' \
     docker-compose.yml >/dev/null
-grep -Fx '    image: ghcr.io/chapeltech/asgard-kdc:latest' \
+grep -Fx '    image: ghcr.io/chapeltech/asgard:latest' \
     docker-compose.yml >/dev/null
 grep -Fx '    network_mode: host' docker-compose.yml >/dev/null
 grep -Fx '    restart: unless-stopped' docker-compose.yml >/dev/null

@@ -2,7 +2,7 @@
 
 set -eu
 
-IMAGE=ghcr.io/chapeltech/asgard-kdc:latest
+IMAGE=ghcr.io/chapeltech/asgard:latest
 COMPOSE=docker-compose.yml
 STATE=.asgard-slave-state
 BINDING=.asgard-bootstrap-binding
