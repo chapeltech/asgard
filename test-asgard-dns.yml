@@ -63,6 +63,12 @@ services:
       asgard-dns:
         ipv4_address: 172.30.0.29
 
+  debian-systemd:
+    dns: *client-dns
+    networks:
+      asgard-dns:
+        ipv4_address: 172.30.0.30
+
   redhat-krb5:
     dns: *client-dns
     networks:

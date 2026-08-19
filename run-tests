@@ -425,6 +425,8 @@ test_bifrost_switch() {
 }
 
 expect_krb5_host_show_krb5_conf() {
+	typeset BOX HOST OUT
+
 	BOX="$1"
 	HOST="$2"
 	OUT=$(add_tmpfile)
@@ -1035,6 +1037,23 @@ test_prestash_fetch() {
 	verify_prestashed_material "$BOX" "$USER"
 }
 
+test_prestash_systemd_fetch() {
+	BOX="$1"
+	USER="$2"
+
+	echo "Testing packaged prestash service on $BOX"
+	remove_prestashed_material "$BOX" "$USER"
+	$CMD "$BOX" /bin/sh -c '
+	    systemctl reset-failed krb5-prestash-refresh.service
+	    systemctl start krb5-prestash-refresh.service
+	    test "$(systemctl show -p Result --value \
+	        krb5-prestash-refresh.service)" = success
+	    test "$(systemctl show -p ExecMainStatus --value \
+	        krb5-prestash-refresh.service)" = 0
+	    systemctl is-active --quiet krb5-prestash-refresh.timer'
+	verify_prestashed_material "$BOX" "$USER"
+}
+
 compare_client_prestashed_tickets() {
 	KRB5_BOX=client-krb5
 	BIFROST_BOX=client-bifrost
@@ -1161,6 +1180,42 @@ test_systemd_hostd_units() {
 	    fi'
 }
 
+test_packaged_krb5_admin_service() {
+	BOX="$1"
+
+	echo "Testing packaged krb5_admin service entry on $BOX"
+	$CMD "$BOX" /bin/sh -c '
+	    grep -Eq \
+	        "^[[:space:]]*krb5_admin[[:space:]]+2666/tcp([[:space:]]|$)" \
+	        /etc/services
+	    getent services krb5_admin/tcp | grep -Eq \
+	        "^[^[:space:]]+[[:space:]]+2666/tcp([[:space:]]|$)"'
+}
+
+test_systemd_hostd_runtime() {
+	typeset BOX HOST
+
+	BOX="$1"
+	HOST="$BOX.example.com"
+
+	echo "Testing systemd host daemon activation on $BOX"
+	$CMD "$BOX" /bin/sh -c '
+	    test "$(cat /proc/1/comm)" = systemd
+	    systemctl is-enabled --quiet krb5-hostd.target
+	    systemctl start krb5-hostd.target
+	    systemctl is-active --quiet krb5-hostd.target
+	    systemctl is-active --quiet krb5-hostd.socket
+	    systemctl is-active --quiet krb5-hostd-knc.socket
+	    systemctl is-active --quiet krb5-prestash-refresh.timer
+	    test -S /run/krb5_hostd'
+
+	expect_krb5_host_show_krb5_conf bastion "$HOST"
+	$CMD bastion krb5_host -h "$HOST" list_keytab root >/dev/null
+	$CMD "$BOX" /bin/sh -c '
+	    systemctl is-active --quiet krb5-hostd.service
+	    systemctl is-active --quiet krb5-hostd-knc.service'
+}
+
 test_redhat_clients() {
 
 	[ "$RED_HAT" = 1 ] || return 0
@@ -1264,6 +1319,7 @@ setup_asgard_dns() {
 	dns_host mail		172.30.0.27
 	dns_host sshcluster-a	172.30.0.28
 	dns_host sshcluster-b	172.30.0.29
+	dns_host debian-systemd	172.30.0.30
 
 	if [ "$RED_HAT" = 1 ]; then
 		dns_host redhat-krb5	172.30.0.25
@@ -2226,7 +2282,17 @@ test_bifrost_host_cli client-krb5
 provision_host_bifrost client-bifrost
 test_bifrost_host_cli client-bifrost
 
+provision_host debian-systemd
+provision_host_hostd_conf debian-systemd
+test_systemd_hostd_units debian-systemd
+test_packaged_krb5_admin_service debian-systemd
+test_systemd_hostd_runtime debian-systemd
+
 compare_test_clients
+ensure_www_data_appid
+$CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
+    debian-systemd.example.com
+test_prestash_systemd_fetch debian-systemd www-data
 test_redhat_clients
 
 $CMD client-krb5 kinit user < $passwd
