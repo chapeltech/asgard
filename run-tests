@@ -469,6 +469,7 @@ $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
 
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
+test "$($CMD kdc1 krb5_admin -l master)" = kdc1.example.com
 
 #
 # XXXrcd: L4M3 sleep for race, fix later...

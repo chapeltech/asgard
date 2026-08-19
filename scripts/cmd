@@ -217,7 +217,6 @@ setup_master() {
 	krb5_keytab -Z
 	krb5_keytab -Z krb5_admin
 	krb5_keytab -Z iprop
-	krb5_admin -l master > /etc/krb5/master
 
 	touch "$SETUP_FILE"
 }
