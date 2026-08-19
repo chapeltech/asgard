@@ -7,7 +7,7 @@ add_label|label|scenario
 bind_host|host-binding|scenario
 bind_host_secret|host-secret|scenario
 bootstrap_host_key|host-bootstrap|scenario
-ca|general|scenario
+print_ca|general|scenario
 change|principal-key|scenario
 change_passwd|principal-password|scenario
 create|principal|scenario

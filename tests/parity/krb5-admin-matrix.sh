@@ -84,8 +84,8 @@ compare_exit "krb5_admin help through bifrost" bifrost help
 compare_exit "krb5_admin list_commands through bifrost" bifrost list_commands
 ca_want=$(tmp_json)
 ca_got=$(tmp_json)
-krb5_admin ca > "$ca_want"
-bifrost ca > "$ca_got"
+krb5_admin print_ca > "$ca_want"
+bifrost print_ca > "$ca_got"
 if cmp "$ca_want" "$ca_got"; then
 	pass "CA certificate parity"
 else
