@@ -93,14 +93,22 @@ EOM
 					include_pkinit_san = true
 					subject_name = $SN
 					ekus = 1.3.6.1.5.5.7.3.2
-					ca = FILE:/var/heimdal/kdc-priv.pem
+					ca = FILE:/var/heimdal/kx509-priv.pem
 				}
 				hostbased_service = {
 					HTTP = {
 						include_dnsname_san = true
 						subject_name = $HOST_SN
 						ekus = 1.3.6.1.5.5.7.3.1
-						ca = FILE:/var/heimdal/kdc-priv.pem
+						ca = FILE:/var/heimdal/kx509-priv.pem
+					}
+					host = {
+						include_dnsname_san = true
+						include_pkinit_san = true
+						subject_name = $HOST_SN
+						ekus = 1.3.6.1.5.5.7.3.1
+						ekus = 1.3.6.1.5.5.7.3.2
+						ca = FILE:/var/heimdal/kx509-priv.pem
 					}
 				}
 			}
@@ -274,6 +282,19 @@ setup_master() {
 			--certificate="FILE:kdc-priv.pem"
 
 	hxtool cc --no-private-keys kdc-priv.pem kdc-pub.pem
+
+	hxtool issue-certificate					\
+			--ca-certificate=FILE:ca-priv.pem		\
+			--generate-key=rsa				\
+			--issue-ca					\
+			--path-length=0				\
+			--ku=keyCertSign				\
+			--ku=cRLSign					\
+			--subject="CN=kx509 issuer"			\
+			--certificate=FILE:kx509-priv.pem
+
+	hxtool cc --append ca-pub.pem kx509-priv.pem
+	hxtool cc --no-private-keys kx509-priv.pem kx509-pub.pem
 
 	touch "$SETUP_FILE"
 }
