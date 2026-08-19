@@ -1,6 +1,16 @@
 x-kdc-environment: &kdc-environment
   ASGARD_KDC_PROCESSES: "${ASGARD_KDC_PROCESSES:-2}"
 
+x-systemd-container: &systemd-container
+  privileged: true
+  cgroup: private
+  tmpfs:
+    - /run
+    - /run/lock
+  volumes:
+    - /sys/fs/cgroup:/sys/fs/cgroup:rw
+  stop_signal: SIGRTMIN+3
+
 services:
   kdc1:
     image: asgard/kdc
@@ -83,6 +93,13 @@ services:
     image: asgard/client
     hostname: client-bifrost.example.com
     command: start-client
+
+  debian-systemd:
+    <<: *systemd-container
+    image: asgard/client
+    hostname: debian-systemd.example.com
+    entrypoint: ["/usr/lib/systemd/systemd"]
+    command: []
 
   #
   # These hosts run the Red Hat RPM image.  The test harness provisions
