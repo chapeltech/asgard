@@ -7,12 +7,16 @@ services:
     hostname: kdc1.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - kdc1:/var/heimdal
 
   kdc2:
     image: asgard/kdc
     hostname: kdc2.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - kdc2:/var/heimdal
   #
   # This is the host on which the administrator
   # will be running commands:
@@ -50,3 +54,7 @@ services:
     image: asgard/client
     hostname: client-bifrost.example.com
     command: start-client
+
+volumes:
+  kdc1:
+  kdc2:
