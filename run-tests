@@ -1504,6 +1504,7 @@ $CMD kdc1 /cmd print-ca		> $ca_pub
 $CMD kdc1 /cmd create-admin admin	| \
 	sed "s,^.*'\(.*\)',\1," > $passwd
 $CMD kdc1 krb5_admin -l modify admin attributes-=needchange
+$CMD kdc1 /bin/sh /tests/parity/krb5-admin-local-matrix.sh
 test_snapshot_rotation_after_admin
 setup_asgard_dns
 
