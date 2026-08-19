@@ -170,6 +170,7 @@ RUN apt update -qq					\
     && apt install -y --no-install-recommends		\
 	coreutils mksh nvi procps			\
 	supervisor tini					\
+	systemd						\
 	openbsd-inetd					\
 	inetutils-syslogd				\
 	jq						\
