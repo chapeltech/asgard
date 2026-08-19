@@ -1,0 +1,21 @@
+services:
+  rocky96-public:
+    build:
+      context: tests/rocky96-public
+      dockerfile: Containerfile
+    image: asgard/rocky96-public
+    hostname: rocky96-public.example.com
+    privileged: true
+    cgroup: private
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    networks:
+      - default
+      - asgard-dns
+    stop_signal: SIGRTMIN+3
+
+networks:
+  asgard-dns:

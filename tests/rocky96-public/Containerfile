@@ -1,0 +1,59 @@
+FROM quay.io/rockylinux/rockylinux:9.6@sha256:91bbb8eb52ca462611c1f9ce5c4cede4172a31bfe64f336e82f29648694a3cfe
+
+RUN rm -f /etc/yum.repos.d/*.repo && \
+    printf '%s\n' \
+        '[baseos]' \
+        'name=Rocky Linux 9.6 - BaseOS' \
+        'baseurl=https://dl.rockylinux.org/vault/rocky/9.6/BaseOS/$basearch/os/' \
+        'enabled=1' \
+        'gpgcheck=1' \
+        'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9' \
+        '[appstream]' \
+        'name=Rocky Linux 9.6 - AppStream' \
+        'baseurl=https://dl.rockylinux.org/vault/rocky/9.6/AppStream/$basearch/os/' \
+        'enabled=1' \
+        'gpgcheck=1' \
+        'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9' \
+        '[crb]' \
+        'name=Rocky Linux 9.6 - CRB' \
+        'baseurl=https://dl.rockylinux.org/vault/rocky/9.6/CRB/$basearch/os/' \
+        'enabled=1' \
+        'gpgcheck=1' \
+        'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9' \
+        '[extras]' \
+        'name=Rocky Linux 9.6 - Extras' \
+        'baseurl=https://dl.rockylinux.org/vault/rocky/9.6/extras/$basearch/os/' \
+        'enabled=1' \
+        'gpgcheck=1' \
+        'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9' \
+        > /etc/yum.repos.d/rocky-9.6.repo && \
+    dnf -y install \
+        dnf-plugins-core hostname jq openssh-clients procps-ng shadow-utils \
+        systemd && \
+    curl -fsSL https://repo.chapeltech.uk/config/chapeltech.repo \
+        -o /etc/yum.repos.d/chapeltech.repo && \
+    curl -fsSL https://repo.chapeltech.uk/keys/chapeltech-archive-keyring.asc \
+        -o /tmp/chapeltech-archive-keyring.asc && \
+    rpm --import /tmp/chapeltech-archive-keyring.asc && \
+    rm -f /tmp/chapeltech-archive-keyring.asc && \
+    cached=0 && \
+    for attempt in 1 2 3 4 5; do \
+        if dnf -y makecache --repo chapeltech; then \
+            cached=1; \
+            break; \
+        fi; \
+        dnf clean metadata; \
+        sleep 2; \
+    done && \
+    test "$cached" = 1 && \
+    packages=$(dnf -q repoquery --repo chapeltech --available \
+        --qf '%{name}' '*' | sort -u) && \
+    test -n "$packages" && \
+    dnf -y install $packages && \
+    dnf history info last > /root/chapeltech-install-history.txt && \
+    rpm -qa --qf '%{name} %{evr} %{arch}\n' | sort \
+        > /root/installed-packages.txt && \
+    dnf clean all
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/usr/lib/systemd/systemd"]
