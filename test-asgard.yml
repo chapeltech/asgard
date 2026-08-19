@@ -126,6 +126,25 @@ services:
     hostname: xrealm-client.example.com
     command: start-client
 
+  #
+  # Single-appliance, multiple-local-realm coverage.
+  multi-kdc:
+    image: asgard/kdc
+    hostname: multi-kdc.example.com
+    command: start-kdc
+    volumes:
+      - multi-kdc:/var/heimdal
+
+  multi-a:
+    image: asgard/client
+    hostname: multi-a.example.com
+    command: start-client
+
+  multi-b:
+    image: asgard/client
+    hostname: multi-b.example.com
+    command: start-client
+
 volumes:
   kdc1:
   kdc2:
@@ -133,3 +152,4 @@ volumes:
   xrealm-a:
   xrealm-b:
   xrealm-ad:
+  multi-kdc:
