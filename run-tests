@@ -459,6 +459,75 @@ test_kx509_certificate() {
 	$CMD "$BOX" klist >/dev/null
 }
 
+test_bifrost_tls() {
+	BOX="$1"
+	IDENTITY="$2"
+	UNTRUSTED=/tmp/bifrost-untrusted.pem
+	BODY='["admin@EXAMPLE.COM"]'
+	URL=https://kdc1.example.com:3666/v1/kdc/query
+
+	echo "Testing Bifrost TLS, mTLS, and HTTP Negotiate"
+
+	STATUS=$($CMD "$BOX" curl -sS -o /dev/null -w '%{http_code}' \
+	    --cacert /etc/krb5/ca-pub.pem \
+	    -X QUERY -H 'content-type: application/json' \
+	    -H 'x-bifrost-actor: admin@EXAMPLE.COM' \
+	    -H 'x-bifrost-negotiate: admin@EXAMPLE.COM' \
+	    --data "$BODY" "$URL")
+	if [ "$STATUS" != 401 ]; then
+		echo "Bifrost trusted spoofed identity headers: HTTP $STATUS" >&2
+		exit 1
+	fi
+
+	if $CMD "$BOX" curl -sS --connect-timeout 2 \
+	    -o /dev/null http://kdc1.example.com:3666/v1/kdc/query; then
+		echo "Bifrost accepted plaintext HTTP" >&2
+		exit 1
+	fi
+
+	$CMD "$BOX" curl -sS --fail-with-body \
+	    --cacert /etc/krb5/ca-pub.pem \
+	    --cert "$IDENTITY" --key "$IDENTITY" \
+	    -X QUERY -H 'content-type: application/json' \
+	    --data "$BODY" "$URL" >/dev/null
+
+	$CMD "$BOX" env USER=bifrost-no-certificate \
+	    bifrost -h kdc1.example.com:3666 query admin@EXAMPLE.COM \
+	    >/dev/null
+	$CMD "$BOX" /bin/sh -c \
+	    'cat >/tmp/bifrost-failover.conf' <<'EOM'
+[libdefaults]
+	default_realm = EXAMPLE.COM
+	dns_lookup_kdc = false
+	rdns = false
+
+[realms]
+	EXAMPLE.COM = {
+		kdc = 127.0.0.1
+		kdc = kdc1.example.com
+	}
+EOM
+	$CMD "$BOX" env KRB5_CONFIG=/tmp/bifrost-failover.conf \
+	    USER=bifrost-no-certificate bifrost -r EXAMPLE.COM \
+	    query admin@EXAMPLE.COM >/dev/null
+	$CMD "$BOX" env BIFROST_TLS_CLIENT_IDENTITY="$IDENTITY" \
+	    bifrost -h kdc1.example.com:3666 query admin@EXAMPLE.COM \
+	    >/dev/null
+
+	$CMD "$BOX" rm -f "$UNTRUSTED"
+	$CMD "$BOX" hxtool issue-certificate \
+	    --self-signed --generate-key=rsa --type=https-client \
+	    --subject=CN=untrusted \
+	    --certificate="PEM-FILE:$UNTRUSTED"
+	if $CMD "$BOX" curl -sS --cacert /etc/krb5/ca-pub.pem \
+	    --cert "$UNTRUSTED" --key "$UNTRUSTED" \
+	    -X QUERY -H 'content-type: application/json' \
+	    --data "$BODY" "$URL" >/dev/null 2>&1; then
+		echo "Bifrost accepted an untrusted TLS client certificate" >&2
+		exit 1
+	fi
+}
+
 normalise_client_json() {
 	HOST="$1"
 	RAW="$2"
@@ -1107,6 +1176,7 @@ provision_host_ca bastion
 echo -n Admin passwd:\ ; cat $passwd
 $CMD bastion kinit admin < $passwd
 test_kx509_certificate bastion admin@EXAMPLE.COM admin
+test_bifrost_tls bastion /tmp/kx509-admin.pem
 
 #
 #
