@@ -840,6 +840,59 @@ compare_test_clients() {
 	compare_client_prestashed_tickets
 }
 
+test_systemd_hostd_units() {
+	BOX="$1"
+
+	echo "Testing packaged systemd host daemon linkage on $BOX"
+	$CMD "$BOX" /bin/sh -c '
+	    set -e
+	    unitdir=/usr/lib/systemd/system
+	    for unit in krb5-hostd.socket krb5-hostd.service \
+	        krb5-hostd-knc.socket krb5-hostd-knc.service \
+	        krb5-hostd.target \
+	        krb5-prestash-refresh.service \
+	        krb5-prestash-refresh.timer; do
+	        test -r "$unitdir/$unit"
+	    done
+	    test "$unitdir/krb5-hostd.target" = \
+	        "$(readlink -f "/etc/systemd/system/multi-user.target.wants/krb5-hostd.target")"
+	    test "$unitdir/krb5-prestash-refresh.timer" = \
+	        "$(readlink -f "/etc/systemd/system/timers.target.wants/krb5-prestash-refresh.timer")"
+	    grep -Fx "Wants=krb5-hostd.socket krb5-hostd-knc.socket" \
+	        "$unitdir/krb5-hostd.target" >/dev/null
+	    grep -Fx \
+	        "Wants=krb5-prestash-refresh.service krb5-prestash-refresh.timer" \
+	        "$unitdir/krb5-hostd.target" >/dev/null
+	    grep -Fx "ListenStream=/run/krb5_hostd" \
+	        "$unitdir/krb5-hostd.socket" >/dev/null
+	    grep -Fx "ListenStream=2666" \
+	        "$unitdir/krb5-hostd-knc.socket" >/dev/null
+	    grep -Fx \
+	        "ExecStart=/usr/libexec/prefork /usr/sbin/krb5_hostd -P" \
+	        "$unitdir/krb5-hostd.service" >/dev/null
+	    grep -Fx \
+	        "ExecStart=/usr/libexec/prefork /usr/bin/knc -iS /run/krb5_hostd" \
+	        "$unitdir/krb5-hostd-knc.service" >/dev/null
+	    grep -Fx "ExecStart=/usr/bin/krb5_prestash fetch" \
+	        "$unitdir/krb5-prestash-refresh.service" >/dev/null
+	    grep -Fx "Persistent=yes" \
+	        "$unitdir/krb5-prestash-refresh.timer" >/dev/null
+	    systemd-analyze verify --man=no \
+	        "$unitdir"/krb5-hostd*.socket \
+	        "$unitdir"/krb5-hostd*.service \
+	        "$unitdir"/krb5-hostd.target \
+	        "$unitdir"/krb5-prestash-refresh.service \
+	        "$unitdir"/krb5-prestash-refresh.timer
+	    systemd-analyze calendar "*-*-* 02:00:00" >/dev/null
+	    if command -v rpm >/dev/null 2>&1; then
+	        rpm -qf "$unitdir/krb5-hostd.service" |
+	            grep -F krb5-hostd >/dev/null
+	    else
+	        dpkg-query -S "$unitdir/krb5-hostd.service" |
+	            grep -F krb5-hostd >/dev/null
+	    fi'
+}
+
 ensure_www_data_appid() {
 
 	if $CMD bastion bifrost -J query www-data@EXAMPLE.COM \
@@ -1234,6 +1287,7 @@ $CMD bastion krb5_admin modify user		\
 
 provision_host client-krb5
 provision_host_hostd_conf client-krb5
+test_systemd_hostd_units client-krb5
 test_bifrost_host_cli client-krb5
 
 provision_host_bifrost client-bifrost
