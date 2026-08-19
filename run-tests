@@ -197,18 +197,6 @@ GSSAPIKeyExchange yes
 EOM
 }
 
-provision_redhat_services() {
-	BOX="$1"
-
-	$CMD "$BOX" /bin/sh -c \
-	    'grep -v -E "^(bifrost|krb5_admin)[[:space:]]" /etc/services \
-	    > /tmp/services.$$ &&
-	    printf "bifrost 3666/tcp\nkrb5_admin 2666/tcp\n" \
-	    >> /tmp/services.$$ &&
-	    cat /tmp/services.$$ > /etc/services &&
-	    rm -f /tmp/services.$$'
-}
-
 provision_host() {
 	BOX="$1"
 
@@ -1017,13 +1005,17 @@ wait_for_prestashed_material() {
 test_prestash_systemd_fetch() {
 	BOX="$1"
 	USER="$2"
-	UNIT=/usr/lib/systemd/system/krb5-prestash-refresh.service
 
 	echo "Testing packaged prestash service on $BOX"
 	remove_prestashed_material "$BOX" "$USER"
-	$CMD "$BOX" grep -Fx 'ExecStart=/usr/bin/krb5_prestash fetch' \
-	    "$UNIT" >/dev/null
-	$CMD "$BOX" /usr/bin/krb5_prestash fetch
+	$CMD "$BOX" /bin/sh -c '
+	    systemctl reset-failed krb5-prestash-refresh.service
+	    systemctl start krb5-prestash-refresh.service
+	    test "$(systemctl show -p Result --value \
+	        krb5-prestash-refresh.service)" = success
+	    test "$(systemctl show -p ExecMainStatus --value \
+	        krb5-prestash-refresh.service)" = 0
+	    systemctl is-active --quiet krb5-prestash-refresh.timer'
 	verify_prestashed_material "$BOX" "$USER"
 }
 
@@ -1044,8 +1036,7 @@ compare_client_prestashed_tickets() {
 	install_client_prestashed_ticket "$KRB5_BOX"
 	install_client_prestashed_ticket "$BIFROST_BOX"
 	compare_client_installed_tickets "$KRB5_BOX" "$BIFROST_BOX"
-	test_prestash_systemd_fetch "$KRB5_BOX" www-data
-	echo "krb5_prestash fetch live parity completed successfully"
+	echo "krb5_prestash fetch parity completed successfully"
 }
 
 compare_client_remote_keytabs() {
@@ -1153,6 +1144,40 @@ test_systemd_hostd_units() {
 	    fi'
 }
 
+test_packaged_krb5_admin_service() {
+	BOX="$1"
+
+	echo "Testing packaged krb5_admin service entry on $BOX"
+	$CMD "$BOX" /bin/sh -c '
+	    grep -Eq \
+	        "^[[:space:]]*krb5_admin[[:space:]]+2666/tcp([[:space:]]|$)" \
+	        /etc/services
+	    getent services krb5_admin/tcp | grep -Eq \
+	        "^[^[:space:]]+[[:space:]]+2666/tcp([[:space:]]|$)"'
+}
+
+test_systemd_hostd_runtime() {
+	BOX="$1"
+	HOST="$BOX.example.com"
+
+	echo "Testing systemd host daemon activation on $BOX"
+	$CMD "$BOX" /bin/sh -c '
+	    test "$(cat /proc/1/comm)" = systemd
+	    systemctl is-enabled --quiet krb5-hostd.target
+	    systemctl start krb5-hostd.target
+	    systemctl is-active --quiet krb5-hostd.target
+	    systemctl is-active --quiet krb5-hostd.socket
+	    systemctl is-active --quiet krb5-hostd-knc.socket
+	    systemctl is-active --quiet krb5-prestash-refresh.timer
+	    test -S /run/krb5_hostd'
+
+	expect_krb5_host_show_krb5_conf bastion "$HOST"
+	$CMD bastion krb5_host -h "$HOST" list_keytab root >/dev/null
+	$CMD "$BOX" /bin/sh -c '
+	    systemctl is-active --quiet krb5-hostd.service
+	    systemctl is-active --quiet krb5-hostd-knc.service'
+}
+
 test_redhat_clients() {
 
 	[ "$RED_HAT" = 1 ] || return 0
@@ -1164,13 +1189,13 @@ test_redhat_clients() {
 	    printf "%s\n" "$deps" | grep -F libgssapi_krb5.so.2 >/dev/null &&
 	    ! printf "%s\n" "$deps" | grep -F libgssapi.so.3 >/dev/null'
 
-	provision_redhat_services redhat-krb5
 	provision_host redhat-krb5
 	provision_host_hostd_conf redhat-krb5
+	test_packaged_krb5_admin_service redhat-krb5
+	test_systemd_hostd_runtime redhat-krb5
 	$CMD redhat-krb5 bifrost -l host list_keytab root >/dev/null
 	$CMD redhat-krb5 krb5_keytab >/dev/null
 
-	provision_redhat_services redhat-bifrost
 	provision_host_bifrost_keytab redhat-bifrost
 	$CMD redhat-bifrost bifrost -l host list_keytab root >/dev/null
 	$CMD redhat-bifrost krb5_keytab >/dev/null
@@ -2344,7 +2369,17 @@ test_bifrost_host_cli client-krb5
 provision_host_bifrost client-bifrost
 test_bifrost_host_cli client-bifrost
 
+provision_host debian-systemd
+provision_host_hostd_conf debian-systemd
+test_systemd_hostd_units debian-systemd
+test_packaged_krb5_admin_service debian-systemd
+test_systemd_hostd_runtime debian-systemd
+
 compare_test_clients
+ensure_www_data_appid
+$CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
+    debian-systemd.example.com
+test_prestash_systemd_fetch debian-systemd www-data
 test_redhat_clients
 
 $CMD client-krb5 kinit user < $passwd
