@@ -132,7 +132,7 @@ COPY scripts/cmd /cmd
 
 RUN    ln -sf /var/heimdal/master /etc/krb5		\
     && ln -sf heimdal /var/kerberos			\
-	&& echo bifrost 2666/tcp >> /etc/services
+	&& echo bifrost 3666/tcp >> /etc/services
 
 ENTRYPOINT ["/cmd"]
 
@@ -179,6 +179,6 @@ COPY tests /tests
 COPY scripts /scripts
 COPY scripts/cmd /cmd
 
-RUN echo bifrost 2666/tcp >> /etc/services
+RUN echo bifrost 3666/tcp >> /etc/services
 
 ENTRYPOINT ["/cmd"]
