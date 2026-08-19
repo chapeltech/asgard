@@ -1,15 +1,15 @@
 services:
   kdc:
-    image: ${ASGARD_IMAGE:-asgard/kdc}
+    image: ${ASGARD_IMAGE:-ghcr.io/chapeltech/asgard:latest}
     hostname: ${ASGARD_HOSTNAME:-kdc.example.com}
     command: start-kdc
+    restart: unless-stopped
     environment:
       ASGARD_BIFROST: "${ASGARD_BIFROST:-1}"
     ports: ["53/udp", "53/tcp", "88/udp", "88/tcp",
             "464/tcp", "2666/tcp", "3666/tcp"]
-    # In production, we'll have a persistent volume:
-#    volumes:
-#      - kdc1:/var/heimdal
+    volumes:
+      - kdc:/var/heimdal
 
-#volumes:
-#  kdc1:
+volumes:
+  kdc:
