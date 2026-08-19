@@ -1549,6 +1549,108 @@ verify_xrealm_service_ticket() {
 	    grep "$XREALM_SERVICE" >/dev/null
 }
 
+configure_xrealm_keytab_bootstrap() {
+	$CMD xrealm-a /bin/sh -c \
+	    'cat >/etc/krb5/krb5_admind.conf && chmod 600 /etc/krb5/krb5_admind.conf' <<EOM
+\$allow_fetch = 1;
+\$xrealm_bootstrap{"$XREALM_B"} = ["$XREALM_A"];
+1;
+EOM
+	$CMD xrealm-a /bin/sh -c \
+	    'kill $(pidof krb5_admind) 2>/dev/null || true;
+	    kill $(pidof prefork) 2>/dev/null || true'
+}
+
+install_xrealm_client_keytab_fixture() {
+	ROOT="$1"
+	KEYTAB=$(add_tmpfile)
+
+	$CMD xrealm-b /bin/sh -c \
+	    'rm -rf /tmp/xrealm-client-root &&
+	    mkdir -p /tmp/xrealm-client-root/etc \
+		/tmp/xrealm-client-root/var/spool/keytabs &&
+	    bifrost keytab -R /tmp/xrealm-client-root get -Z \
+		host/xrealm-client.example.com@'"$XREALM_B"' &&
+	    base64 /tmp/xrealm-client-root/etc/krb5.keytab' > "$KEYTAB"
+
+	$CMD xrealm-client /bin/sh -c \
+	    "rm -rf '$ROOT' &&
+	    mkdir -p '$ROOT/etc' '$ROOT/var/spool/keytabs' &&
+	    base64 -d >'$ROOT/etc/krb5.keytab' &&
+	    chmod 600 '$ROOT/etc/krb5.keytab'" < "$KEYTAB"
+}
+
+install_default_xrealm_client_keytab() {
+	ROOT="$1"
+
+	$CMD xrealm-client /bin/sh -c \
+	    "cp '$ROOT/etc/krb5.keytab' /etc/krb5.keytab &&
+	    chmod 600 /etc/krb5.keytab"
+}
+
+reset_xrealm_client_target_key() {
+	$CMD xrealm-a krb5_admin -l remove \
+	    "host/xrealm-client.example.com@$XREALM_A" \
+	    >/dev/null 2>&1 || true
+}
+
+normalise_xrealm_keytab() {
+	ROOT="$1"
+	OUT="$2"
+
+	$CMD xrealm-client bifrost keytab -R "$ROOT" -p root list |
+	    awk '
+		/^Keytab name:/ { next }
+		/^KVNO[[:space:]]/ { next }
+		/^----[[:space:]]/ { next }
+		/host\/xrealm-client\.example\.com@A\.XREALM\.EXAMPLE/ {
+		    print $1 "|" $2 "|" $3
+		}
+	    ' | sort > "$OUT"
+}
+
+test_xrealm_keytab_xrealm() {
+	LEGACY_ROOT=/tmp/xrealm-keytab-legacy
+	BIFROST_ROOT=/tmp/xrealm-keytab-bifrost
+	LEGACY_KEYS=$(add_tmpfile)
+	BIFROST_KEYS=$(add_tmpfile)
+	DIFF=$(add_tmpfile)
+
+	echo "Testing keytab xrealm bootstrap parity"
+
+	configure_xrealm_keytab_bootstrap
+	$CMD xrealm-a bifrost -l create_host xrealm-client.example.com \
+	    realm="$XREALM_A" ip_addr=10.92.0.20 >/dev/null 2>&1 || true
+
+	install_xrealm_client_keytab_fixture "$LEGACY_ROOT"
+	install_xrealm_client_keytab_fixture "$BIFROST_ROOT"
+
+	reset_xrealm_client_target_key
+	install_default_xrealm_client_keytab "$LEGACY_ROOT"
+	$CMD xrealm-client env KRB5_CONFIG=/tmp/xrealm-krb5.conf \
+	    KRB5CCNAME=FILE:/tmp/xrealm-keytab-legacy.ccache \
+	    KRB5_KTNAME=FILE:$LEGACY_ROOT/etc/krb5.keytab \
+	    krb5_keytab -R "$LEGACY_ROOT" -X "$XREALM_B" \
+	    "host/xrealm-client.example.com@$XREALM_A"
+	reset_xrealm_client_target_key
+	install_default_xrealm_client_keytab "$BIFROST_ROOT"
+	$CMD xrealm-client env KRB5_CONFIG=/tmp/xrealm-krb5.conf \
+	    KRB5CCNAME=FILE:/tmp/xrealm-keytab-bifrost.ccache \
+	    KRB5_KTNAME=FILE:$BIFROST_ROOT/etc/krb5.keytab \
+	    bifrost keytab -R "$BIFROST_ROOT" get -X "$XREALM_B" \
+	    "host/xrealm-client.example.com@$XREALM_A"
+
+	normalise_xrealm_keytab "$LEGACY_ROOT" "$LEGACY_KEYS"
+	normalise_xrealm_keytab "$BIFROST_ROOT" "$BIFROST_KEYS"
+	if ! diff -u "$LEGACY_KEYS" "$BIFROST_KEYS" > "$DIFF"; then
+		echo "xrealm keytab output differs" 1>&2
+		cat "$DIFF" 1>&2
+		exit 1
+	fi
+
+	echo "krb5_keytab -X live parity completed successfully"
+}
+
 assert_kx509_realm_identity() {
 	BOX="$1"
 	REALM="$2"
@@ -1624,6 +1726,7 @@ test_xrealm_bifrost_package_trust() {
 	create_local_user xrealm-b "buser@$XREALM_B" "$(cat "$BPASS")"
 	verify_xrealm_service_ticket "bifrost package" \
 	    "buser@$XREALM_B" "$BPASS" /tmp/xrealm-bifrost.ccache
+	test_xrealm_keytab_xrealm
 }
 
 test_xrealm_password_trust() {
