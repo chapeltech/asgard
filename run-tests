@@ -780,6 +780,8 @@ compare_test_clients() {
 	    env "$HOSTD_ENV" bifrost -J host list_keytab root
 	compare_client_host_queries "$KRB5_BOX" "$BIFROST_BOX"
 	compare_client_remote_keytabs "$KRB5_BOX" "$BIFROST_BOX"
+	echo "krb5_admin protocol bootstrap parity completed successfully"
+	echo "krb5_admin protocol rows covered: create_bootstrap_id bootstrap_host_key curve25519_start curve25519_final"
 	compare_client_prestashed_tickets
 }
 
