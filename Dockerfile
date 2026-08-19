@@ -133,6 +133,9 @@ COPY scripts/cmd /cmd
 RUN    ln -sf /var/heimdal/master /etc/krb5		\
     && ln -sf ../../var/heimdal/ca-pub.pem /etc/krb5/ca-pub.pem \
     && ln -sf heimdal /var/kerberos			\
+    && mkdir -p /etc/bifrost				\
+    && ln -sf /var/heimdal/bifrost-priv.pem		\
+	/var/heimdal/ca-pub.pem /etc/bifrost/		\
     && echo bifrost 3666/tcp >> /etc/services
 
 RUN    chmod 700 /scripts/asgard-rsync			\

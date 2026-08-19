@@ -225,6 +225,15 @@ start_kdc() {
 	configure_inetd
 	export BIFROST_IPROP_ACL="$ASGARD_IPROP_ACL"
 	reconcile_realms
+	if [ "$BIFROSTD" = 1 ] && [ ! -s /var/heimdal/bifrost-priv.pem ]; then
+		mkdir -p /run/asgard
+		KRB5CCNAME=FILE:/run/asgard/bifrost.ccache \
+		    kinit -k "host/$(hostname)"
+		KRB5CCNAME=FILE:/run/asgard/bifrost.ccache \
+		    heimtools kx509 \
+		    -o PEM-FILE:/var/heimdal/bifrost-priv.pem
+		rm -f /run/asgard/bifrost.ccache
+	fi
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }
 
@@ -312,6 +321,14 @@ setup_master() {
 
 	hxtool cc --append ca-pub.pem kx509-priv.pem
 	hxtool cc --no-private-keys kx509-priv.pem kx509-pub.pem
+
+	hxtool issue-certificate					\
+			--ca-certificate=FILE:ca-priv.pem		\
+			--generate-key=rsa				\
+			--type=https-server				\
+			--hostname="$(hostname)"			\
+			--subject="CN=$(hostname)"			\
+			--certificate=PEM-FILE:bifrost-priv.pem
 
 	touch "$SETUP_FILE"
 }
