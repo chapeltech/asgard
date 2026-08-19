@@ -1,0 +1,19 @@
+# item|coverage
+mode:default-get|scenario
+mode:change|scenario
+mode:reproduce|scenario
+mode:list|scenario
+mode:query|scenario
+mode:test|scenario
+option:-A|scenario
+option:-F|scenario
+option:-L|scenario
+option:-R|scenario
+option:-U|scenario
+option:-W|scenario
+option:-X|scenario
+option:-Z|scenario
+option:-f|scenario
+option:-p|scenario
+option:-v|scenario
+option:-w|scenario
