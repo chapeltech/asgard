@@ -6,6 +6,11 @@ set -eu
 prefix=$(unique_name princ)
 user="$prefix-user@$REALM"
 service="service/$prefix.example.com@$REALM"
+password="Ff1passThePolicy--$prefix-user"
+changed_password="Ff1passThePolicy--$prefix-changed"
+initial_cc="$TEST_TMP/initial.ccache"
+old_cc="$TEST_TMP/old.ccache"
+changed_cc="$TEST_TMP/changed.ccache"
 user_json=$(tmp_json)
 service_json=$(tmp_json)
 list_json=$(tmp_json)
@@ -16,15 +21,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
-run_ok "bifrost fallback creates user" bifrost create_user "$user"
+run_ok "bifrost fallback creates user" \
+    bifrost create_user "$user" "$password"
 run_ok "bifrost fallback clears needchange" \
     bifrost modify "$user" attributes-=needchange
+run_ok "created user obtains credentials" \
+    kinit_ccache "$user" "$password" "$initial_cc"
 
 json_cmd "$user_json" bifrost_json query "$user"
 json_field_eq "created user principal" "$user_json" .principal "$user"
 json_array_has "created user requires preauth" "$user_json" \
     .attributes +requires_preauth
 json_array_lacks "created user needchange cleared" "$user_json" \
+    .attributes +needchange
+
+run_ok "bifrost fallback changes password" \
+    bifrost change_passwd "$user" "$changed_password"
+run_fail "old password no longer obtains credentials" \
+    kinit_ccache "$user" "$password" "$old_cc"
+run_ok "changed password obtains credentials" \
+    kinit_ccache "$user" "$changed_password" "$changed_cc"
+
+run_ok "bifrost fallback resets password" bifrost reset_passwd "$user"
+json_cmd "$user_json" bifrost_json query "$user"
+json_array_has "reset password requires change" "$user_json" \
     .attributes +needchange
 
 run_ok "bifrost fallback disables user" bifrost disable "$user"
