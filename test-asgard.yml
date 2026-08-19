@@ -3,11 +3,15 @@ services:
     image: asgard/kdc
     hostname: kdc1.example.com
     command: start-kdc
+    volumes:
+      - kdc1:/var/heimdal
 
   kdc2:
     image: asgard/kdc
     hostname: kdc2.example.com
     command: start-kdc
+    volumes:
+      - kdc2:/var/heimdal
 
   kdc-no-bifrost:
     image: asgard/kdc
@@ -60,4 +64,6 @@ services:
     command: start-client
 
 volumes:
+  kdc1:
+  kdc2:
   kdc-no-bifrost:
