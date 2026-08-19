@@ -527,6 +527,23 @@ normalise_client_json() {
 	    < "$RAW" > "$OUT"
 }
 
+normalise_host_json() {
+	HOST="$1"
+	RAW="$2"
+	OUT="$3"
+
+	$CMD bastion jq -S --arg host "$HOST" \
+	    'walk(
+		if type == "string" then
+		    gsub($host; "HOST")
+		elif type == "object" then
+		    del(.ip_addr)
+		else
+		    .
+		end
+	    )' < "$RAW" > "$OUT"
+}
+
 normalise_ticket_json() {
 	HOST="$1"
 	RAW="$2"
@@ -584,7 +601,7 @@ normalised_admin_host_query() {
 	RAW=$(add_tmpfile)
 
 	$CMD bastion bifrost -J query_host "$HOST" > "$RAW"
-	normalise_client_json "$HOST" "$RAW" "$OUT"
+	normalise_host_json "$HOST" "$RAW" "$OUT"
 }
 
 normalised_remote_host_command() {
@@ -594,7 +611,7 @@ normalised_remote_host_command() {
 	RAW=$(add_tmpfile)
 
 	$CMD bastion krb5_host -J -h "$HOST" "$@" > "$RAW"
-	normalise_client_json "$HOST" "$RAW" "$OUT"
+	normalise_host_json "$HOST" "$RAW" "$OUT"
 }
 
 normalised_remote_ticket_query() {
