@@ -2008,6 +2008,20 @@ assert_multirealm_client_conf() {
 	grep "$MULTI_B = {" "$CONF" >/dev/null
 }
 
+assert_multirealm_kdc_keytabs() {
+	BOX="$1"
+	HOST="$2"
+
+	for REALM in "$MULTI_A" "$MULTI_B"; do
+		for SERVICE in host krb5_admin HTTP iprop; do
+			PRINC="$SERVICE/$HOST@$REALM"
+			$CMD "$BOX" bifrost keytab -p root list "$PRINC" |
+			    awk -v princ="$PRINC" \
+				'$3 == princ { found = 1 } END { exit !found }'
+		done
+	done
+}
+
 test_appliance_realm_identity() {
 	BOX="$1"
 	REALM="$2"
@@ -2180,6 +2194,7 @@ test_single_appliance_multirealm_services() {
 	wait_for_xrealm_kdc multi-kdc "$MULTI_A"
 	wait_for_xrealm_kdc multi-kdc "$MULTI_B"
 	sleep 5
+	assert_multirealm_kdc_keytabs multi-kdc "$MULTI_KDC"
 	assert_multirealm_client_conf
 	assert_kx509_realm_identity multi-kdc "$MULTI_A"
 	assert_kx509_realm_identity multi-kdc "$MULTI_B"
@@ -2222,6 +2237,7 @@ test_single_appliance_multirealm_services() {
 }
 
 /bin/sh tests/asgard-create-slave.sh ./asgard-create-slave
+/bin/sh tests/cmd-keytabs.sh ./scripts/cmd
 
 if [ -n "${ASGARD_PLATFORM:-}" ]; then
 	docker buildx bake \

@@ -245,6 +245,16 @@ print_krb5_conf() {
 	mk_krb5_client_conf client
 }
 
+install_kdc_keytabs() {
+
+	for R in $(cat "$ASGARD_REALMS"); do
+		krb5_keytab -Z "host@$R"
+		krb5_keytab -Z "krb5_admin@$R"
+		krb5_keytab -Z "HTTP@$R"
+		krb5_keytab -Z "iprop@$R"
+	done
+}
+
 start_kdc() {
 
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
@@ -252,10 +262,7 @@ start_kdc() {
 	configure_inetd
 	prepare
 	export BIFROST_IPROP_ACL="$ASGARD_IPROP_ACL"
-	krb5_keytab -Z
-	krb5_keytab -Z krb5_admin
-	krb5_keytab -Z HTTP
-	krb5_keytab -Z iprop
+	install_kdc_keytabs
 	if [ ! -s /var/heimdal/bifrost-priv.pem ]; then
 		KRB5CCNAME=FILE:/run/asgard/bifrost.ccache \
 		    kinit -k "host/$(hostname)"
