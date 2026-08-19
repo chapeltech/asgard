@@ -3,11 +3,14 @@
 Asgard is a Kerberos appliance. It runs a Heimdal KDC with `bifrost`,
 `krb5_admind`, kpasswd, snapshot support, and the supporting admin tooling.
 
-The current published image is:
+The published image is:
 
 ```text
-ghcr.io/chapeltech/asgard-kdc:sha-280c050b28b7
+ghcr.io/chapeltech/asgard:latest
 ```
+
+This is the only published Asgard image. The client and other Docker stages
+exist only to build and test the appliance.
 
 Use the included compose file:
 
@@ -15,24 +18,10 @@ Use the included compose file:
 docker-compose.yml
 ```
 
-## Pull the Image
-
-If the GitHub Container Registry package is public:
-
-```sh
-docker pull ghcr.io/chapeltech/asgard-kdc:sha-280c050b28b7
-```
-
-Then pull through compose:
-
-```sh
-docker compose pull
-```
-
 ## Configure
 
 ```sh
-export ASGARD_IMAGE=ghcr.io/chapeltech/asgard-kdc:sha-280c050b28b7
+export ASGARD_IMAGE=ghcr.io/chapeltech/asgard:latest
 export ASGARD_HOSTNAME=kdc.example.com
 ```
 

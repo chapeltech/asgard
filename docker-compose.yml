@@ -1,6 +1,6 @@
 services:
   kdc:
-    image: ${ASGARD_IMAGE:-asgard/kdc}
+    image: ${ASGARD_IMAGE:-ghcr.io/chapeltech/asgard:latest}
     hostname: ${ASGARD_HOSTNAME:-kdc.example.com}
     command: start-kdc
     environment:
