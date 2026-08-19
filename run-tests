@@ -1679,6 +1679,51 @@ test_xrealm_bifrost_package_trust() {
 	    "buser@$XREALM_B" "$BPASS" /tmp/xrealm-bifrost.ccache
 }
 
+test_xrealm_password_trust() {
+	SECRET=$(add_tmpfile)
+	ADPASS=$(add_tmpfile)
+	ADPKG=$(add_tmpfile)
+
+	echo "Testing password-instantiated xrealm trust with UNIX KDC peer"
+
+	printf '%s\n' "unix-ad-shared-trust-password" > "$SECRET"
+	printf '%s\n' "unix-ad-user-password" > "$ADPASS"
+	$CMD xrealm-ad /bin/sh -c 'cat >>/etc/krb5.conf' <<'EOM'
+
+[kadmin]
+	default_keys = aes256-cts:pw-salt aes128-cts:pw-salt
+EOM
+	ensure_xrealm_realm xrealm-a "$XREALM_AD" \
+	    is_remote=true remote_kind=windows_ad
+	ensure_xrealm_trust xrealm-a "$XREALM_A" "$XREALM_AD"
+
+	cat > "$ADPKG" <<EOM
+{
+  "format": "bifrost-windows-ad-realm-trust-secret-v1",
+  "realm": "$XREALM_A",
+  "trusted_realm": "$XREALM_AD",
+  "principal": "$XREALM_AD_TRUST",
+  "kvno": 2,
+  "enctypes": ["aes256-cts", "aes128-cts"],
+  "secret": "$(cat "$SECRET")"
+}
+EOM
+
+	$CMD xrealm-a bifrost -l import_ad_realm_trust \
+	    "$XREALM_A" "$XREALM_AD" < "$ADPKG"
+	assert_xrealm_hdb_principal xrealm-a "$XREALM_AD_TRUST"
+
+	create_local_user xrealm-ad "$XREALM_AD_TRUST" "$(cat "$SECRET")"
+	$CMD xrealm-ad krb5_admin -l change_passwd \
+	    "$XREALM_AD_TRUST" "$(cat "$SECRET")"
+	$CMD xrealm-ad krb5_admin -l modify "$XREALM_AD_TRUST" \
+	    attributes-=requires_preauth attributes+=allow_svr
+	create_local_user xrealm-ad "aduser@$XREALM_AD" "$(cat "$ADPASS")"
+
+	verify_xrealm_service_ticket "password UNIX peer" \
+	    "aduser@$XREALM_AD" "$ADPASS" /tmp/xrealm-ad.ccache
+}
+
 test_xrealm_trust_matrix() {
 	echo "Starting xrealm trust matrix"
 
@@ -1694,6 +1739,7 @@ test_xrealm_trust_matrix() {
 
 	test_xrealm_same_appliance_trust
 	test_xrealm_bifrost_package_trust
+	test_xrealm_password_trust
 
 	echo "xrealm trust matrix completed successfully"
 }
