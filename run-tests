@@ -1243,6 +1243,8 @@ test_redhat_clients() {
 
 	provision_host redhat-krb5
 	provision_host_hostd_conf redhat-krb5
+	test_packaged_krb5_admin_service redhat-krb5
+	test_systemd_hostd_runtime redhat-krb5
 	$CMD redhat-krb5 bifrost -l host list_keytab root >/dev/null
 	$CMD redhat-krb5 krb5_keytab >/dev/null
 
@@ -1257,7 +1259,7 @@ test_redhat_clients() {
 	ensure_www_data_appid
 	$CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
 	    redhat-krb5.example.com || /bin/true
-	test_prestash_fetch redhat-krb5 www-data
+	test_prestash_systemd_fetch redhat-krb5 www-data
 	test_redhat_dns_cli redhat-bifrost
 
 	echo "Red Hat package image tests completed successfully"
