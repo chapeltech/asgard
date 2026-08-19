@@ -326,8 +326,6 @@ setup_master() {
 	hxtool cc --append ca-pub.pem kx509-priv.pem
 	hxtool cc --no-private-keys kx509-priv.pem kx509-pub.pem
 
-	krb5_admin -l master > /etc/krb5/master
-
 	touch "$SETUP_FILE"
 }
 
