@@ -349,6 +349,10 @@ install_client_prestashed_ticket() {
 
 	if [ "$BOX" = client-bifrost ]; then
 		$CMD "$BOX" test -f /var/spool/certs/www-data
+		$CMD "$BOX" hxtool verify --missing-revoke \
+		    cert:PEM-FILE:/var/spool/certs/www-data \
+		    chain:PEM-FILE:/var/spool/certs/www-data \
+		    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
 		$CMD "$BOX" su -s /bin/sh -c \
 		    'kinit -C PEM-FILE:/var/spool/certs/www-data \
 		    www-data@EXAMPLE.COM && klist >/dev/null' www-data
