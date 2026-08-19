@@ -7,12 +7,16 @@ services:
     hostname: kdc1.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - kdc1:/var/heimdal
 
   kdc2:
     image: asgard/kdc
     hostname: kdc2.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - kdc2:/var/heimdal
 
   kdc-no-bifrost:
     image: asgard/kdc
@@ -21,6 +25,8 @@ services:
     environment:
       <<: *kdc-environment
       ASGARD_BIFROST: "0"
+    volumes:
+      - kdc-no-bifrost:/var/heimdal
 
   no-bifrost-client:
     image: asgard/client
@@ -107,18 +113,24 @@ services:
     hostname: xrealm-a.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - xrealm-a:/var/heimdal
 
   xrealm-b:
     image: asgard/kdc
     hostname: xrealm-b.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - xrealm-b:/var/heimdal
 
   xrealm-ad:
     image: asgard/kdc
     hostname: xrealm-ad.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - xrealm-ad:/var/heimdal
 
   xrealm-client:
     image: asgard/client
@@ -132,6 +144,8 @@ services:
     hostname: multi-kdc.example.com
     command: start-kdc
     environment: *kdc-environment
+    volumes:
+      - multi-kdc:/var/heimdal
 
   multi-a:
     image: asgard/client
@@ -142,3 +156,12 @@ services:
     image: asgard/client
     hostname: multi-b.example.com
     command: start-client
+
+volumes:
+  kdc1:
+  kdc2:
+  kdc-no-bifrost:
+  xrealm-a:
+  xrealm-b:
+  xrealm-ad:
+  multi-kdc:
