@@ -293,12 +293,12 @@ bifrost_http() {
 	body=$3
 	host=${4:-$KDC1}
 
-	curl -sS --fail-with-body -X "$method"			\
+	curl -sS --fail-with-body --negotiate -u :		\
+	    --cacert /etc/krb5/ca-pub.pem			\
+	    -X "$method"						\
 	    -H 'content-type: application/json'			\
-	    -H "x-bifrost-actor: $ADMIN"			\
-	    -H "x-bifrost-negotiate: $ADMIN"			\
 	    --data "$body"					\
-	    "http://$host:2666$path"
+	    "https://$host:3666$path"
 }
 
 json_string() {
