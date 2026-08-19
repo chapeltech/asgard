@@ -12,6 +12,7 @@ for test in							\
     /tests/admin-principal-map.sh				\
     /tests/admin-tickets.sh					\
     /tests/admin-owners.sh					\
+    /tests/admin-authz.sh					\
     /tests/admin-concurrency.sh				\
     /tests/bifrost-parity.sh					\
     /tests/parity/manifest.sh					\
