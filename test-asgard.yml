@@ -106,10 +106,11 @@ services:
   # one with krb5_admin/krb5_keytab and one with bifrost, mirroring the
   # Debian client comparison above.
   redhat-krb5:
+    <<: *systemd-container
     profiles: ["redhat"]
     image: bifrost-redhat-dns
     hostname: redhat-krb5.example.com
-    command: ["/bin/sh", "-c", "trap 'exit 0' TERM INT; sleep infinity & wait"]
+    command: ["/usr/lib/systemd/systemd"]
     environment:
       KRB5_CONFIG: /etc/krb5.conf
 
