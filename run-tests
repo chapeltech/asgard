@@ -2153,7 +2153,8 @@ $CMD kdc1 /bin/sh /tests/parity/krb5-keytab-local-matrix.sh
 setup_asgard_dns
 
 for verb in							\
-	add_acl add_label bind_host create create_appid create_group	\
+	add_acl add_label bind_host change_passwd create create_appid	\
+	create_group						\
 	create_host create_logical_host create_subject create_user	\
 	add_feature del_feature del_label disable enable has_feature	\
 	insert_hostmap insert_ticket list list_labels mquery modify	\
@@ -2162,6 +2163,7 @@ for verb in							\
 	query_acl_owner query_aclgroup query_group query_host		\
 	query_host_owner query_hostmap query_subject query_ticket	\
 	refresh_ticket remove remove_group remove_host remove_hostmap	\
+	reset_passwd						\
 	remove_subject remove_ticket sacls_add sacls_del sacls_query
 do
 	$CMD kdc1 krb5_admin -l sacls_add "$verb" admin@EXAMPLE.COM	\
