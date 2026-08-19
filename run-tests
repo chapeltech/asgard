@@ -4,6 +4,7 @@ set -e
 
 RED_HAT=1
 RED_HAT_BUILD=1
+PUBLIC_RPM=0
 KEEP_ON_FAIL=0
 ATTACH=0
 DNS=0
@@ -12,18 +13,19 @@ DNSSEC=0
 usage() {
 
 	cat >&2 <<'EOM'
-usage: run-tests [-a] [-k] [-B] [-R] [-D] [-S]
+usage: run-tests [-a] [-k] [-B] [-R] [-P] [-D] [-S]
 
   -a  attach to the compose stack after tests complete
   -k  keep the compose stack on failure
   -B  skip building the Red Hat package image
   -R  skip the Red Hat package-image hosts and tests
+  -P  test Rocky 9.6 packages from repo.chapeltech.uk
   -D  enable KDC-hosted authoritative DNS
   -S  enable DNSSEC tests; implies -D
 EOM
 }
 
-OPTS=$(getopt -o '+akBRDSh' -- "$@") || {
+OPTS=$(getopt -o '+akBRPDSh' -- "$@") || {
 	usage
 	exit 2
 }
@@ -45,6 +47,10 @@ while true; do
 		;;
 	-R)
 		RED_HAT=0
+		shift
+		;;
+	-P)
+		PUBLIC_RPM=1
 		shift
 		;;
 	-D)
@@ -74,6 +80,9 @@ if [ $# -ne 0 ]; then
 fi
 
 COMPOSE_FILES="-f test-asgard.yml"
+if [ "$PUBLIC_RPM" = 1 ]; then
+	COMPOSE_FILES="$COMPOSE_FILES -f test-asgard-rocky96-public.yml"
+fi
 if [ "$DNS" = 1 ]; then
 	COMPOSE_FILES="$COMPOSE_FILES -f test-asgard-dns.yml"
 fi
@@ -121,6 +130,14 @@ build_redhat_images() {
 
 	echo "Building Red Hat package image bifrost-redhat-dns"
 	../bifrost/packaging/dev/redhat-dns/build-image bifrost-redhat-dns
+}
+
+build_public_rpm_image() {
+
+	[ "$PUBLIC_RPM" = 1 ] || return 0
+
+	echo "Building Rocky 9.6 public-package image"
+	$DC build rocky96-public
 }
 
 bail() {
@@ -1246,6 +1263,25 @@ test_redhat_clients() {
 	echo "Red Hat package image tests completed successfully"
 }
 
+test_public_rocky96_client() {
+
+	[ "$PUBLIC_RPM" = 1 ] || return 0
+
+	echo "Testing published Rocky 9.6 packages"
+	test_systemd_hostd_units rocky96-public
+	provision_host rocky96-public
+	provision_host_hostd_conf rocky96-public
+	test_packaged_krb5_admin_service rocky96-public
+	test_systemd_hostd_runtime rocky96-public
+	$CMD rocky96-public useradd --system --no-create-home www-data
+	ensure_www_data_appid
+	$CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
+	    rocky96-public.example.com
+	test_prestash_systemd_fetch rocky96-public www-data
+
+	echo "Published Rocky 9.6 package test completed successfully"
+}
+
 ensure_www_data_appid() {
 
 	if $CMD bastion bifrost -J query www-data@EXAMPLE.COM \
@@ -2296,6 +2332,7 @@ else
 	    --allow=fs.read=../krb5_admin test
 fi
 build_redhat_images
+build_public_rpm_image
 
 $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
@@ -2420,6 +2457,7 @@ $CMD bastion krb5_admin insert_ticket www-data@EXAMPLE.COM \
     debian-systemd.example.com
 test_prestash_systemd_fetch debian-systemd www-data
 test_redhat_clients
+test_public_rocky96_client
 
 $CMD client-krb5 kinit user < $passwd
 $CMD client-bifrost kinit user < $passwd
