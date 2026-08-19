@@ -82,6 +82,13 @@ add_tmpfile() {
 	echo $TMP
 }
 
+create_local_principal() {
+	BOX="$1"
+	PRINCIPAL="$2"
+
+	$CMD "$BOX" krb5_admin -l create "$PRINCIPAL"
+}
+
 build_redhat_images() {
 
 	[ "$RED_HAT" = 1 ] || return 0
@@ -122,6 +129,22 @@ provision_host_ca() {
 
 	$CMD "$BOX" /bin/sh -c 'mkdir -p /etc/krb5 && cat >/etc/krb5/ca-pub.pem' \
 	    < $ca_pub
+}
+
+print_direct_krb5_conf() {
+	BOX="$1"
+	REALM="$2"
+	KDC="$3"
+
+	$CMD "$BOX" /cmd print-krb5-conf
+	cat <<EOM
+
+[realms]
+	$REALM = {
+		kdc = $KDC
+		kpasswd_server = $KDC
+	}
+EOM
 }
 
 provision_host_hostd_conf() {
@@ -211,6 +234,42 @@ wait_for_host_services() {
 
 	wait_for_socket "$BOX" /run/krb5_hostd
 	wait_for_socket "$BOX" /run/bifrost/hostd.sock
+}
+
+test_slave_ticket_renewal() {
+	SLAVE_CONF=$(add_tmpfile)
+	IPROP_TEST_PRINC=iprop-incremental-test
+
+	echo "Testing TGT renewal through the replicated KDC"
+
+	$CMD kdc2 test -f /var/heimdal/setup.done
+	$CMD kdc2 krb5_keytab -l | grep -F \
+	    "host/kdc2.example.com@EXAMPLE.COM" >/dev/null
+	$CMD kdc2 krb5_keytab -l | grep -F \
+	    "krb5_admin/kdc2.example.com@EXAMPLE.COM" >/dev/null
+	$CMD kdc2 krb5_keytab -l | grep -F \
+	    "iprop/kdc2.example.com@EXAMPLE.COM" >/dev/null
+
+	create_local_principal kdc1 "$IPROP_TEST_PRINC"
+	for i in $(seq 1 30); do
+		if $CMD kdc2 krb5_admin -l query \
+		    "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null 2>&1; then
+			break
+		fi
+		sleep 1
+	done
+	$CMD kdc2 krb5_admin -l query \
+	    "$IPROP_TEST_PRINC@EXAMPLE.COM" >/dev/null
+
+	print_direct_krb5_conf kdc1 EXAMPLE.COM kdc2.example.com \
+	    > "$SLAVE_CONF"
+	$CMD bastion /bin/sh -c 'cat >/tmp/slave-krb5.conf' < "$SLAVE_CONF"
+
+	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc \
+	    kinit -r 1h admin < "$passwd"
+	$CMD bastion env KRB5_CONFIG=/tmp/slave-krb5.conf \
+	    KRB5CCNAME=FILE:/tmp/slave-renew.cc kinit -R
+	$CMD bastion env KRB5CCNAME=FILE:/tmp/slave-renew.cc klist >/dev/null
 }
 
 expect_krb5_host_show_krb5_conf() {
@@ -727,6 +786,28 @@ test_instant_prestashed_tickets() {
 	wait_for_prestashed_material "$BOX" www-data
 }
 
+setup_primary_kdc_model() {
+
+	echo "Modeling primary KDC in bifrost"
+
+	if ! $CMD kdc1 bifrost -l query_realm EXAMPLE.COM >/dev/null 2>&1; then
+		$CMD kdc1 bifrost -l create_realm EXAMPLE.COM
+	fi
+
+	if $CMD kdc1 bifrost -l query_host kdc1.example.com | \
+	    grep '^realm:' >/dev/null; then
+		/bin/true
+	else
+		$CMD kdc1 bifrost -l create_host kdc1.example.com \
+		    realm=EXAMPLE.COM
+	fi
+
+	$CMD kdc1 bifrost -l modify_realm EXAMPLE.COM \
+	    kdc+=kdc1.example.com master=kdc1.example.com
+}
+
+/bin/sh tests/asgard-create-slave.sh ./asgard-create-slave
+
 if [ -n "${ASGARD_PLATFORM:-}" ]; then
 	docker buildx bake \
 	    --set "*.platform=$ASGARD_PLATFORM" \
@@ -743,6 +824,7 @@ $DC down -v --remove-orphans
 $DC up   -d --remove-orphans
 
 $CMD kdc1 /cmd setup-master EXAMPLE.COM
+setup_primary_kdc_model
 
 #
 # XXXrcd: L4M3 sleep for race, fix later...
@@ -752,7 +834,7 @@ krb5_conf=$(add_tmpfile)
 ca_pub=$(add_tmpfile)
 passwd=$(add_tmpfile)
 
-$CMD kdc1 /cmd print-krb5-conf	> $krb5_conf
+print_direct_krb5_conf kdc1 EXAMPLE.COM kdc1.example.com > $krb5_conf
 $CMD kdc1 /cmd print-ca		> $ca_pub
 
 #
@@ -792,6 +874,24 @@ test_kx509_certificate bastion admin@EXAMPLE.COM admin
 
 #
 #
+
+slave_ca=$(add_tmpfile)
+$CMD bastion krb5_admin -M -r EXAMPLE.COM ca > "$slave_ca"
+cmp "$ca_pub" "$slave_ca"
+
+$CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com < "$slave_ca"
+BOOT=$($CMD kdc2 krb5_keytab bootstrap/RANDOM)
+$CMD bastion bifrost bind_host kdc2.example.com "$BOOT"
+$CMD kdc1 bifrost -l modify_realm EXAMPLE.COM kdc+=kdc2.example.com
+$CMD kdc1 grep -Fx "iprop/kdc2.example.com@EXAMPLE.COM" \
+    /run/asgard/iprop-acl >/dev/null
+$CMD kdc2 test ! -f /var/heimdal/setup.done
+if $CMD kdc2 pidof kdc >/dev/null 2>&1; then
+	echo "slave KDC started before initial propagation" >&2
+	exit 1
+fi
+$CMD kdc2 /cmd activate-slave
+test_slave_ticket_renewal
 
 echo "Starting bifrost and krb5_admin remote admin tests"
 $CMD bastion /bin/sh /tests/run.sh
