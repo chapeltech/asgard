@@ -192,12 +192,12 @@ provision_host_bifrost() {
 	provision_host_krb5_conf "$BOX"
 	provision_host_ca "$BOX"
 
-	BOOT=$($CMD "$BOX" bifrost keytab bootstrap/RANDOM)
+	BOOT=$($CMD "$BOX" bifrost keytab get bootstrap/RANDOM)
 
 	$CMD bastion bifrost bind_host			\
 	    $BOX.example.com $BOOT
 
-	$CMD "$BOX" bifrost keytab
+	$CMD "$BOX" bifrost keytab get
 	provision_host_hostd_conf "$BOX"
 }
 
