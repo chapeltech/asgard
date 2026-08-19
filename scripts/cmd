@@ -56,6 +56,14 @@ prepare() {
 	done
 }
 
+realm_dn() {
+	printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/\./,DC=/g; s/^/DC=/'
+}
+
+realm_conf_name() {
+	printf '%s\n' "$1" | tr . _
+}
+
 mk_krb5_realm_conf() {
 	TYPE="$1"
 	REALM="$2"
@@ -73,19 +81,24 @@ EOM
 
 	cat <<EOM
 [kdc]
+EOM
+
+	SN="CN=\${principal-name-without-realm},$(realm_dn "$REALM")"
+	HOST_SN="CN=\${principal-host-name},$(realm_dn "$REALM")"
+	cat <<EOM
 	realms = {
 		$REALM = {
 			kx509 = {
 				user = {
 					include_pkinit_san = true
-					subject_name = CN=\${principal-name-without-realm},DC=example,DC=com
+					subject_name = $SN
 					ekus = 1.3.6.1.5.5.7.3.2
 					ca = FILE:/var/heimdal/kdc-priv.pem
 				}
 				hostbased_service = {
 					HTTP = {
 						include_dnsname_san = true
-						subject_name = CN=\${principal-host-name},DC=example,DC=com
+						subject_name = $HOST_SN
 						ekus = 1.3.6.1.5.5.7.3.1
 						ca = FILE:/var/heimdal/kdc-priv.pem
 					}
@@ -99,7 +112,7 @@ EOM
 write_krb5_conf() {
 	DIR=/var/heimdal/krb5.conf.d
 	REALM="$(cat /var/heimdal/realm)"
-	REALMS="$REALM"
+	REALMS="$(local_realms)"
 
 	FILE="/var/heimdal/krb5.conf"
 	cat > "$FILE.new" <<EOM
@@ -111,25 +124,38 @@ EOM
 	mv "$FILE.new" "$FILE"
 
 	mkdir -p "$DIR"
+	rm -f "$DIR"/*.conf
 	for R in $REALMS; do
-		FILE="$DIR/$(printf '%s\n' "$R" | tr . _).conf"
+		FILE="$DIR/$(realm_conf_name "$R").conf"
 
 		mk_krb5_realm_conf "$1" "$R" > "$FILE.new"
 		mv "$FILE.new" "$FILE"
 	done
 }
 
+local_realms() {
+
+	if [ -f "$SETUP_FILE" ] && [ -s /var/heimdal/krb5_admin.db ]; then
+		bifrost -l search_realm kind=local
+	else
+		cat /var/heimdal/realm
+	fi
+}
+
 create_admin() {
 
 	[ $# -ne 1 ]	&& usage "create-user takes exactly one argument"
+	[ -s /var/heimdal/realm ] || usage "KDC is not setup yet"
 
-	krb5_admin -l create_user "$@"
-	krb5_admin -l create_subject "$@"@EXAMPLE.COM type=krb5
-	krb5_admin -l sacls_add bind_host "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add create_user "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add create_subject "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add modify "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add principal_map_add "$@"@EXAMPLE.COM
+	REALM="$(cat /var/heimdal/realm)"
+	PRINCIPAL="$1@$REALM"
+	krb5_admin -l create_user "$PRINCIPAL"
+	krb5_admin -l create_subject "$PRINCIPAL" type=krb5
+	krb5_admin -l sacls_add bind_host "$PRINCIPAL"
+	krb5_admin -l sacls_add create_user "$PRINCIPAL"
+	krb5_admin -l sacls_add create_subject "$PRINCIPAL"
+	krb5_admin -l sacls_add modify "$PRINCIPAL"
+	krb5_admin -l sacls_add principal_map_add "$PRINCIPAL"
 }
 
 print_ca() {
@@ -141,11 +167,35 @@ print_ca() {
 	cat /var/heimdal/ca-pub.pem
 }
 
+install_kdc_keytabs() {
+
+	for R in $(local_realms); do
+		krb5_keytab -Z "host@$R"
+		krb5_keytab -Z "krb5_admin@$R"
+		krb5_keytab -Z "HTTP@$R"
+		krb5_keytab -Z "iprop@$R"
+	done
+}
+
+reconcile_realms() {
+	TYPE=slave
+	[ "$(hostname)" = "$(cat /var/heimdal/master)" ] && TYPE=master
+
+	write_krb5_conf "$TYPE"
+	if [ "$TYPE" = master ]; then
+		for R in $(local_realms); do
+			krb5_admin -l query "krbtgt/$R@$R" >/dev/null 2>&1 ||
+			    init_realm "$R"
+		done
+	fi
+	install_kdc_keytabs
+}
 start_kdc() {
 
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
 
 	prepare
+	reconcile_realms
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }
 
@@ -169,6 +219,8 @@ shell() {
 setup_master() {
 	REALM="$1"
 
+	[ $# -ne 1 ] && usage "setup-master needs exactly one REALM"
+
 	echo Setting up KDC for REALM=$REALM
 
 	# XXXrcd: this is a short term solution, eventually we will
@@ -187,18 +239,19 @@ setup_master() {
 
 	krb5_admin -l init_db
 	init_realm "$REALM"
+	bifrost -l create_realm "$REALM"
 
+	REALM_DN="$(realm_dn "$REALM")"
 	hxtool issue-certificate					\
 			--self-signed					\
 			--issue-ca					\
 			--generate-key=rsa				\
-			--subject="CN=CA,DC=example,DC=com"		\
+			--subject="CN=CA,$REALM_DN"			\
 			--lifetime=20years				\
 			--certificate="FILE:ca-priv.pem"
 
 	hxtool cc --no-private-keys ca-priv.pem ca-pub.pem
 
-	# XXXrcd: DC=example,DC=com is not correct...
 	hxtool issue-certificate					\
 			--ca-certificate=FILE:ca-priv.pem		\
 			--generate-key=rsa				\
@@ -209,14 +262,10 @@ setup_master() {
 			--ku=digitalSignature				\
 			--ku=keyCertSign				\
 			--pk-init-principal="krbtgt/$REALM@$REALM"	\
-			--subject="uid=kdc,DC=example,DC=com"		\
+			--subject="uid=kdc,$REALM_DN"			\
 			--certificate="FILE:kdc-priv.pem"
 
 	hxtool cc --no-private-keys kdc-priv.pem kdc-pub.pem
-
-	krb5_keytab -Z
-	krb5_keytab -Z krb5_admin
-	krb5_keytab -Z iprop
 
 	touch "$SETUP_FILE"
 }
