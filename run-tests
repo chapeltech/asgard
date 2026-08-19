@@ -436,6 +436,10 @@ test_kx509_certificate() {
 	$CMD "$BOX" kx509 kx509 -s
 	$CMD "$BOX" kx509 kx509 -o "PEM-FILE:$STORE"
 	$CMD "$BOX" test -s "$STORE"
+	$CMD "$BOX" grep -c 'BEGIN CERTIFICATE' "$STORE" | grep '^3$'
+	$CMD "$BOX" hxtool verify --missing-revoke \
+	    "cert:PEM-FILE:$STORE" "chain:PEM-FILE:$STORE" \
+	    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
 	$CMD "$BOX" hxtool print "PEM-FILE:$STORE" > "$PRINT"
 
 	grep "CN=$CN" "$PRINT" >/dev/null
@@ -708,18 +712,70 @@ install_client_prestashed_ticket() {
 
 	$CMD "$BOX" test -f /var/spool/tickets/www-data
 	$CMD "$BOX" su -s /bin/sh -c \
-	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
+	    'PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
 
-	if [ "$BOX" = client-bifrost ]; then
-		$CMD "$BOX" test -f /var/spool/certs/www-data
-		$CMD "$BOX" hxtool verify --missing-revoke \
-		    cert:PEM-FILE:/var/spool/certs/www-data \
-		    chain:PEM-FILE:/var/spool/certs/www-data \
-		    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
-		$CMD "$BOX" su -s /bin/sh -c \
-		    'kinit -C PEM-FILE:/var/spool/certs/www-data \
-		    www-data@EXAMPLE.COM && klist >/dev/null' www-data
-	fi
+	$CMD "$BOX" test -f /var/spool/certs/www-data
+	$CMD "$BOX" su -s /bin/sh -c \
+	    'PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    kinit -C PEM-FILE:/var/spool/certs/www-data \
+	    www-data@EXAMPLE.COM && \
+	    PATH=/usr/lib/asgard/bin:/usr/bin:/bin klist >/dev/null' www-data
+}
+
+remove_prestashed_material() {
+	BOX="$1"
+	USER="$2"
+
+	$CMD "$BOX" rm -f "/var/spool/tickets/$USER" \
+	    "/var/spool/certs/$USER"
+}
+
+verify_prestashed_material() {
+	BOX="$1"
+	USER="$2"
+	PRINC="$USER@EXAMPLE.COM"
+
+	$CMD "$BOX" test -s "/var/spool/tickets/$USER"
+	$CMD "$BOX" su -s /bin/sh -c \
+	    "PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    klist -c FILE:/var/spool/tickets/$USER >/dev/null" "$USER"
+	$CMD "$BOX" test -s "/var/spool/certs/$USER"
+	$CMD "$BOX" hxtool verify --missing-revoke \
+	    "cert:PEM-FILE:/var/spool/certs/$USER" \
+	    "chain:PEM-FILE:/var/spool/certs/$USER" \
+	    anchor:PEM-FILE:/etc/krb5/ca-pub.pem
+	$CMD "$BOX" su -s /bin/sh -c \
+	    "PATH=/usr/lib/asgard/bin:/usr/bin:/bin \
+	    kinit -C PEM-FILE:/var/spool/certs/$USER '$PRINC' &&
+	    PATH=/usr/lib/asgard/bin:/usr/bin:/bin klist >/dev/null" "$USER"
+}
+
+wait_for_prestashed_material() {
+	BOX="$1"
+	USER="$2"
+
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+		if $CMD "$BOX" test -s "/var/spool/tickets/$USER" \
+		    -a -s "/var/spool/certs/$USER"; then
+			verify_prestashed_material "$BOX" "$USER"
+			return
+		fi
+		sleep 1
+	done
+
+	echo "$BOX: prestashed material for $USER was not delivered" 1>&2
+	exit 1
+}
+
+test_prestash_fetch() {
+	BOX="$1"
+	USER="$2"
+
+	echo "Testing krb5_prestash fetch on $BOX"
+	remove_prestashed_material "$BOX" "$USER"
+	$CMD "$BOX" /usr/bin/krb5_prestash fetch
+	verify_prestashed_material "$BOX" "$USER"
 }
 
 compare_client_prestashed_tickets() {
@@ -739,6 +795,8 @@ compare_client_prestashed_tickets() {
 	install_client_prestashed_ticket "$KRB5_BOX"
 	install_client_prestashed_ticket "$BIFROST_BOX"
 	compare_client_installed_tickets "$KRB5_BOX" "$BIFROST_BOX"
+	test_prestash_fetch "$KRB5_BOX" www-data
+	echo "krb5_prestash fetch live parity completed successfully"
 }
 
 compare_client_remote_keytabs() {
@@ -792,22 +850,22 @@ ensure_www_data_appid() {
 	$CMD bastion bifrost create_appid www-data
 }
 
-test_prestashed_tickets() {
+test_instant_prestashed_tickets() {
 	BOX="$1"
 	PRINC=www-data@EXAMPLE.COM
 
-	echo "Testing prestashed ticket delivery to $BOX"
+	echo "Testing immediate prestashed ticket delivery to $BOX"
 
 	ensure_www_data_appid
-	$CMD bastion bifrost insert_ticket "$PRINC"	\
-	    "$BOX.example.com" || /bin/true
+	remove_prestashed_material "$BOX" www-data
+	if ! $CMD bastion krb5_admin insert_ticket "$PRINC" \
+	    "$BOX.example.com"; then
+		$CMD bastion krb5_admin refresh_ticket "$PRINC" \
+		    "$BOX.example.com"
+	fi
 	$CMD bastion bifrost -J query_ticket principal \
 	    "$PRINC" >/dev/null
-
-	$CMD "$BOX" krb5_prestash fetch EXAMPLE.COM
-	$CMD "$BOX" test -f /var/spool/tickets/www-data
-	$CMD "$BOX" su -s /bin/sh -c \
-	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
+	wait_for_prestashed_material "$BOX" www-data
 }
 
 test_separate_databases() {
@@ -1232,7 +1290,7 @@ $CMD bastion krb5_admin principal_map_add www-data HTTP \
 echo "Setting up the web server..."
 $CMD httpserver krb5_keytab -p www-data HTTP
 $CMD httpserver bifrost -l host list_keytab www-data >/dev/null
-test_prestashed_tickets httpserver
+test_instant_prestashed_tickets httpserver
 $CMD httpserver sh -c 'cat > /etc/nginx/sites-available/default' <<EOM
 server {
     listen 80;
