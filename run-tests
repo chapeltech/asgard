@@ -1638,6 +1638,21 @@ test_appliance_realm_identity() {
 	    jq -e --arg admin "$ADMIN" 'index($admin) != null' >/dev/null
 }
 
+test_xrealm_same_appliance_trust() {
+	echo "Testing same-appliance bifrost xrealm trust"
+
+	ensure_xrealm_realm xrealm-a "$XREALM_LOCAL"
+	ensure_xrealm_trust xrealm-a "$XREALM_A" "$XREALM_LOCAL"
+	ensure_xrealm_trust xrealm-a "$XREALM_LOCAL" "$XREALM_A"
+
+	assert_xrealm_hdb_principal xrealm-a \
+	    "krbtgt/$XREALM_A@$XREALM_LOCAL"
+	assert_xrealm_hdb_principal xrealm-a \
+	    "krbtgt/$XREALM_LOCAL@$XREALM_A"
+	$CMD xrealm-a bifrost -l krb5_conf "$XREALM_A" | \
+	    grep "$XREALM_LOCAL = \\." >/dev/null
+}
+
 test_xrealm_trust_matrix() {
 	echo "Starting xrealm trust matrix"
 
@@ -1650,6 +1665,8 @@ test_xrealm_trust_matrix() {
 	ensure_xrealm_realm xrealm-a "$XREALM_A"
 	ensure_xrealm_realm xrealm-b "$XREALM_B"
 	ensure_xrealm_realm xrealm-ad "$XREALM_AD"
+
+	test_xrealm_same_appliance_trust
 
 	echo "xrealm trust matrix completed successfully"
 }
