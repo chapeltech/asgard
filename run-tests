@@ -478,6 +478,8 @@ EOM
 	$CMD kdc1 bifrost -l list_actions >/dev/null
 }
 
+/bin/sh tests/cmd-keytabs.sh ./scripts/cmd
+
 docker buildx bake --allow=fs.read=../bifrost
 
 $DC down -v --remove-orphans

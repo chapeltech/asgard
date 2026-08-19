@@ -1,6 +1,7 @@
-#!/bin/sh
+#!/bin/sh -e
 
 SETUP_FILE=/var/heimdal/setup.done
+ASGARD_REALMS=/var/heimdal/realms
 
 usage() {
 
@@ -10,7 +11,7 @@ usage() {
 	  echo "  docker run create-admin <USER>"
 	  echo "  docker run print-ca"
 	  echo "  docker run print-krb5-conf"
-	  echo "  docker run setup-master <REALM>"
+	  echo "  docker run setup-master <REALM> [REALM...]"
 	  echo "  docker run setup-slave <REALM>"
 	  echo "  docker run shell"
 	  echo "  docker run start-kdc"
@@ -39,15 +40,13 @@ emit_config() {
 	emit_file /etc/krb5.conf
 	emit_cmd ls -l /etc/krb5
 	emit_cmd ls -l /var/heimdal
-	emit_cmd kadmin -l list \*
+	emit_cmd krb5_admin -l list \*
 	echo ------------------------------------------------------------
 }
 
 prepare() {
 
 	[ $debug -gt 0 ]	&& emit_config
-
-	mkdir -p /var/heimdal
 
 	#
 	# XXXrcd: for now, wait until we are setup---this is a hack,
@@ -58,7 +57,28 @@ prepare() {
 		sleep 1;
 	done
 
-	cp /var/heimdal/ca-pub.pem /etc/krb5
+	ln -sf ../../var/heimdal/ca-pub.pem /etc/krb5/ca-pub.pem
+}
+
+realm_dn() {
+	realm="$1"
+	dn=
+
+	while [ -n "$realm" ]; do
+		label="${realm%%.*}"
+		case "$label" in
+		''|*[!A-Za-z0-9-]*)
+			usage "realm is not a dotted DNS name: $1"
+			;;
+		esac
+		dn="${dn}${dn:+,}DC=$label"
+		case "$realm" in
+		*.*)	realm="${realm#*.}"	;;
+		*)	realm=			;;
+		esac
+	done
+
+	printf '%s\n' "$dn"
 }
 
 realm_conf_name() {
@@ -68,17 +88,22 @@ realm_conf_name() {
 
 mk_krb5_realm_conf() {
 	TYPE="$1"
-	REALM="$2"
+	R="$2"
+	REALM="$(cat /var/heimdal/realm)"
 	MASTER="$(cat /var/heimdal/master)"
 
 	[ "$TYPE" = master ] && MASTER=127.0.0.1
 
-	cat <<EOM
+	if [ "$R" = "$REALM" ]; then
+		cat <<EOM
 [libdefaults]
-	default_realm = $REALM
+	default_realm			= $REALM
+EOM
+	fi
 
+	cat <<EOM
 [realms]
-	$REALM = {
+	$R = {
 		kdc = $MASTER
 		kpasswd_server = $MASTER
 	}
@@ -88,19 +113,23 @@ EOM
 
 	cat <<EOM
 [kdc]
+EOM
+
+	DN="$(realm_dn "$R")"
+	cat <<EOM
 	realms = {
-		$REALM = {
+		$R = {
 			kx509 = {
 				user = {
 					include_pkinit_san = true
-					subject_name = CN=\${principal-name-without-realm},DC=example,DC=com
+					subject_name = CN=\${principal-name-without-realm},$DN
 					ekus = 1.3.6.1.5.5.7.3.2
 					ca = FILE:/var/heimdal/kdc-priv.pem
 				}
 				hostbased_service = {
 					HTTP = {
 						include_dnsname_san = true
-						subject_name = CN=\${principal-host-name},DC=example,DC=com
+						subject_name = CN=\${principal-host-name},$DN
 						ekus = 1.3.6.1.5.5.7.3.1
 						ca = FILE:/var/heimdal/kdc-priv.pem
 					}
@@ -114,34 +143,47 @@ EOM
 write_krb5_conf() {
 	DIR=/var/heimdal/krb5.conf.d
 	REALM="$(cat /var/heimdal/realm)"
-	FILE="$DIR/$(realm_conf_name "$REALM").conf"
+	REALMS="$REALM"
+	[ -f "$ASGARD_REALMS" ] && REALMS="$(cat "$ASGARD_REALMS")"
 
 	mkdir -p "$DIR"
-	mk_krb5_realm_conf "$1" "$REALM" > "$FILE.new"
-	mv "$FILE.new" "$FILE"
+	for R in $REALMS; do
+		FILE="$DIR/$(realm_conf_name "$R").conf"
+		mk_krb5_realm_conf "$1" "$R" > "$FILE.new"
+		mv "$FILE.new" "$FILE"
+	done
 }
 
 mk_krb5_client_conf() {
+	REALM="$(cat /var/heimdal/realm)"
+	REALMS="$REALM"
+	[ -f "$ASGARD_REALMS" ] && REALMS="$(cat "$ASGARD_REALMS")"
 
 	cat <<EOM
 [libdefaults]
 	rdns = false
 	pkinit_anchors = FILE:/etc/krb5/ca-pub.pem
+	ignore-acceptor-hostname = true
 EOM
-	mk_krb5_realm_conf "$1" "$(cat /var/heimdal/realm)"
+	for R in $REALMS; do
+		mk_krb5_realm_conf "$1" "$R"
+	done
 }
 
 create_admin() {
 
 	[ $# -ne 1 ]	&& usage "create-user takes exactly one argument"
+	[ -s /var/heimdal/realm ] || usage "KDC is not setup yet"
 
-	krb5_admin -l create_user "$@"
-	krb5_admin -l create_subject "$@"@EXAMPLE.COM type=krb5
-	krb5_admin -l sacls_add bind_host "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add create_user "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add create_subject "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add modify "$@"@EXAMPLE.COM
-	krb5_admin -l sacls_add principal_map_add "$@"@EXAMPLE.COM
+	REALM="$(cat /var/heimdal/realm)"
+	PRINCIPAL="$1@$REALM"
+	krb5_admin -l create_user "$PRINCIPAL"
+	krb5_admin -l create_subject "$PRINCIPAL" type=krb5
+	krb5_admin -l sacls_add bind_host "$PRINCIPAL"
+	krb5_admin -l sacls_add create_user "$PRINCIPAL"
+	krb5_admin -l sacls_add create_subject "$PRINCIPAL"
+	krb5_admin -l sacls_add modify "$PRINCIPAL"
+	krb5_admin -l sacls_add principal_map_add "$PRINCIPAL"
 }
 
 print_ca() {
@@ -162,11 +204,22 @@ print_krb5_conf() {
 	mk_krb5_client_conf client
 }
 
+install_kdc_keytabs() {
+
+	for R in $(cat "$ASGARD_REALMS"); do
+		krb5_keytab -Z "host@$R"
+		krb5_keytab -Z "krb5_admin@$R"
+		krb5_keytab -Z "HTTP@$R"
+		krb5_keytab -Z "iprop@$R"
+	done
+}
+
 start_kdc() {
 
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
 
 	prepare
+	install_kdc_keytabs
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }
 
@@ -190,6 +243,8 @@ shell() {
 setup_master() {
 	REALM="$1"
 
+	[ $# -lt 1 ] && usage "setup-master needs at least one REALM"
+
 	echo Setting up KDC for REALM=$REALM
 
 	# XXXrcd: this is a short term solution, eventually we will
@@ -202,27 +257,29 @@ setup_master() {
 	[ -f "$SETUP_FILE" ] && usage "Realm is already setup, exiting..."
 
 	echo "$REALM"	> /var/heimdal/realm
+	for R in "$@"; do
+		echo "$R" >> "$ASGARD_REALMS"
+	done
 	hostname	> /var/heimdal/master
 
 	write_krb5_conf master
 
-	kadmin -l init --realm-max-ticket-life=1d			\
-		       --realm-max-renewable-life=1w			\
-							"$REALM"
-
 	krb5_admin -l init_db
+	for R in "$@"; do
+		init_realm "$R"
+	done
 
+	REALM_DN="$(realm_dn "$REALM")"
 	hxtool issue-certificate					\
 			--self-signed					\
 			--issue-ca					\
 			--generate-key=rsa				\
-			--subject="CN=CA,DC=example,DC=com"		\
+			--subject="CN=CA,$REALM_DN"			\
 			--lifetime=20years				\
 			--certificate="FILE:ca-priv.pem"
 
 	hxtool cc --no-private-keys ca-priv.pem ca-pub.pem
 
-	# XXXrcd: DC=example,DC=com is not correct...
 	hxtool issue-certificate					\
 			--ca-certificate=FILE:ca-priv.pem		\
 			--generate-key=rsa				\
@@ -233,17 +290,51 @@ setup_master() {
 			--ku=digitalSignature				\
 			--ku=keyCertSign				\
 			--pk-init-principal="krbtgt/$REALM@$REALM"	\
-			--subject="uid=kdc,DC=example,DC=com"		\
+			--subject="uid=kdc,$REALM_DN"			\
 			--certificate="FILE:kdc-priv.pem"
 
 	hxtool cc --no-private-keys kdc-priv.pem kdc-pub.pem
 
-	krb5_keytab -Z
-	krb5_keytab -Z krb5_admin
-	krb5_keytab -Z iprop
 	krb5_admin -l master > /etc/krb5/master
 
 	touch "$SETUP_FILE"
+}
+
+create_realm_principal() {
+	PRINCIPAL="$1"
+	MAX_LIFE="$2"
+	MAX_RENEWABLE_LIFE="$3"
+	shift 3
+
+	krb5_admin -l create "$PRINCIPAL"
+	krb5_admin -l modify "$PRINCIPAL" \
+	    max_life="$MAX_LIFE" max_renewable_life="$MAX_RENEWABLE_LIFE" \
+	    "$@"
+}
+
+init_realm() {
+	R="$1"
+
+	create_realm_principal "krbtgt/$R@$R" 1d 1w
+	create_realm_principal "kadmin/changepw@$R" 5m 5m \
+	    attributes-=allow_tgs_req \
+	    attributes+=password_changing_service \
+	    attributes-=allow_postdated \
+	    attributes-=allow_renewable \
+	    attributes-=allow_proxiable \
+	    attributes+=requires_preauth
+	create_realm_principal "WELLKNOWN/ANONYMOUS@$R" 1h 1h \
+	    attributes+=requires_preauth
+	create_realm_principal "WELLKNOWN/FEDERATED@$R" 1h 1h \
+	    attributes+=requires_preauth
+	if ! krb5_admin -l query \
+	    'WELLKNOWN/org.h5l.fast-cookie@WELLKNOWN:ORG.H5L' >/dev/null 2>&1; then
+		create_realm_principal \
+		    'WELLKNOWN/org.h5l.fast-cookie@WELLKNOWN:ORG.H5L' 1h 1h \
+		    attributes+=requires_preauth \
+		    attributes-=allow_tgs_req \
+		    attributes-=allow_tix
+	fi
 }
 
 setup_slave() {
