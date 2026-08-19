@@ -1826,6 +1826,45 @@ test_windows_xrealm_prestash() {
 	echo "Windows cross-realm prestash test completed successfully"
 }
 
+assert_kx509_realm_identity() {
+	BOX="$1"
+	REALM="$2"
+	HOST="$($CMD "$BOX" hostname)"
+	DN="DC=$(printf '%s' "$REALM" | sed 's/\./,DC=/g')"
+	CCACHE="FILE:/tmp/kx509-$REALM.ccache"
+	CERT="PEM-FILE:/tmp/kx509-$REALM.pem"
+
+	$CMD "$BOX" env KRB5CCNAME="$CCACHE" \
+	    kinit -k "host/$HOST@$REALM"
+	$CMD "$BOX" env KRB5CCNAME="$CCACHE" \
+	    heimtools kx509 -o "$CERT"
+	$CMD "$BOX" hxtool print "$CERT" |
+	    grep -F "subject: \"CN=$HOST,$DN\"" >/dev/null
+}
+
+test_appliance_realm_identity() {
+	BOX="$1"
+	REALM="$2"
+	DN="DC=$(printf '%s' "$REALM" | sed 's/\./,DC=/g')"
+	ADMIN="realm-admin@$REALM"
+
+	echo "Testing appliance identities for $REALM"
+
+	$CMD "$BOX" hxtool print PEM-FILE:/var/heimdal/ca-pub.pem |
+	    grep -F "subject: \"CN=CA,$DN\"" >/dev/null
+	$CMD "$BOX" hxtool print PEM-FILE:/var/heimdal/kdc-pub.pem |
+	    grep -F "subject: \"UID=kdc,$DN\"" >/dev/null
+	assert_kx509_realm_identity "$BOX" "$REALM"
+
+	$CMD "$BOX" /cmd create-admin realm-admin >/dev/null
+	$CMD "$BOX" krb5_admin -J -l query_subject "$ADMIN" |
+	    jq -e '.type == "krb5"' >/dev/null
+	$CMD "$BOX" krb5_admin -J -l query_subject realm-admin@EXAMPLE.COM |
+	    jq -e '. == null' >/dev/null
+	$CMD "$BOX" krb5_admin -J -l sacls_query verb=create_user |
+	    jq -e --arg admin "$ADMIN" 'index($admin) != null' >/dev/null
+}
+
 test_xrealm_same_appliance_trust() {
 	echo "Testing same-appliance bifrost xrealm trust"
 
@@ -1920,6 +1959,7 @@ test_xrealm_trust_matrix() {
 	setup_xrealm_master xrealm-a "$XREALM_A"
 	setup_xrealm_master xrealm-b "$XREALM_B"
 	setup_xrealm_master xrealm-ad "$XREALM_AD"
+	test_appliance_realm_identity xrealm-a "$XREALM_A"
 	write_xrealm_client_conf
 
 	ensure_xrealm_realm xrealm-a "$XREALM_A"
