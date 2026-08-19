@@ -524,17 +524,11 @@ EOM
 	$CMD "$BOX" /usr/sbin/sshd
 }
 
-install_cluster_ssh_keytabs() {
+compare_cluster_ssh_keytabs() {
 	CLUSTER="$1"
 	PRINC="host/$CLUSTER@EXAMPLE.COM"
 	FIRST=$(add_tmpfile)
 	SECOND=$(add_tmpfile)
-
-	for BOX in sshcluster-a sshcluster-b; do
-		$CMD "$BOX" krb5_keytab "$PRINC"
-		$CMD "$BOX" bifrost keytab -p root list |
-		    grep "$PRINC" >/dev/null
-	done
 
 	for BOX in sshcluster-a sshcluster-b; do
 		OUT="$FIRST"
@@ -545,6 +539,62 @@ install_cluster_ssh_keytabs() {
 		test -s "$OUT"
 	done
 	diff -u "$FIRST" "$SECOND"
+}
+
+install_cluster_ssh_keytabs() {
+	CLUSTER="$1"
+	PRINC="host/$CLUSTER@EXAMPLE.COM"
+
+	for BOX in sshcluster-a sshcluster-b; do
+		$CMD "$BOX" krb5_keytab "$PRINC"
+		$CMD "$BOX" bifrost keytab -p root list |
+		    grep "$PRINC" >/dev/null
+	done
+
+	compare_cluster_ssh_keytabs "$CLUSTER"
+}
+
+cluster_keytab_kvno() {
+	BOX="$1"
+	PRINC="$2"
+
+	$CMD "$BOX" bifrost keytab -p root list "$PRINC" |
+	    awk -v princ="$PRINC" '
+	    $3 == princ && $1 > kvno { kvno = $1; found = 1 }
+	    END { if (!found) exit 1; print kvno }'
+}
+
+wait_for_cluster_keytab_kvno() {
+	BOX="$1"
+	PRINC="$2"
+	KVNO="$3"
+
+	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+		test "$(cluster_keytab_kvno "$BOX" "$PRINC")" = "$KVNO" &&
+		    return
+		sleep 1
+	done
+
+	echo "$BOX: $PRINC was not delivered at kvno $KVNO" >&2
+	exit 1
+}
+
+test_cluster_keytab_rotation() {
+	CLUSTER="$1"
+	PRINC="host/$CLUSTER@EXAMPLE.COM"
+	OLD_KVNO=$(cluster_keytab_kvno sshcluster-a "$PRINC")
+
+	test "$OLD_KVNO" = \
+	    "$(cluster_keytab_kvno sshcluster-b "$PRINC")"
+	$CMD sshcluster-a bifrost keytab -p root change "$PRINC"
+	NEW_KVNO=$(cluster_keytab_kvno sshcluster-a "$PRINC")
+	test "$NEW_KVNO" -gt "$OLD_KVNO"
+	wait_for_cluster_keytab_kvno sshcluster-b "$PRINC" "$NEW_KVNO"
+
+	for BOX in sshcluster-a sshcluster-b; do
+		$CMD "$BOX" bifrost keytab -p root test "$PRINC"
+	done
+	compare_cluster_ssh_keytabs "$CLUSTER"
 }
 
 test_cluster_ssh_backend() {
@@ -599,6 +649,9 @@ EOM
 	configure_cluster_ssh_member sshcluster-a "$CLUSTER"
 	configure_cluster_ssh_member sshcluster-b "$CLUSTER"
 
+	test_cluster_ssh_backend "$CLUSTER" sshcluster-a
+	test_cluster_ssh_backend "$CLUSTER" sshcluster-b
+	test_cluster_keytab_rotation "$CLUSTER"
 	test_cluster_ssh_backend "$CLUSTER" sshcluster-a
 	test_cluster_ssh_backend "$CLUSTER" sshcluster-b
 
