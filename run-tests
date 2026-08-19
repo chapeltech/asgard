@@ -197,12 +197,12 @@ provision_host_bifrost() {
 	provision_host_krb5_conf "$BOX"
 	provision_host_ca "$BOX"
 
-	BOOT=$($CMD "$BOX" bifrost keytab bootstrap/RANDOM)
+	BOOT=$($CMD "$BOX" bifrost keytab get bootstrap/RANDOM)
 
 	$CMD bastion bifrost bind_host			\
 	    $BOX.example.com $BOOT
 
-	$CMD "$BOX" bifrost keytab
+	$CMD "$BOX" bifrost keytab get
 	provision_host_hostd_conf "$BOX"
 }
 
@@ -433,8 +433,8 @@ test_kx509_certificate() {
 	echo "Testing kx509 certificate issuance for $PRINC on $BOX"
 
 	$CMD "$BOX" rm -f "$STORE"
-	$CMD "$BOX" heimtools kx509 -s
-	$CMD "$BOX" heimtools kx509 -o "PEM-FILE:$STORE"
+	$CMD "$BOX" kx509 kx509 -s
+	$CMD "$BOX" kx509 kx509 -o "PEM-FILE:$STORE"
 	$CMD "$BOX" test -s "$STORE"
 	$CMD "$BOX" hxtool print "PEM-FILE:$STORE" > "$PRINT"
 
