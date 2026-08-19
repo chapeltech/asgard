@@ -1553,6 +1553,7 @@ write_xrealm_client_conf() {
 	default_realm = $XREALM_B
 	rdns = false
 	dns_lookup_kdc = false
+	pkinit_anchors = FILE:/etc/krb5/ca-pub.pem
 
 [realms]
 	$XREALM_A = {
@@ -1707,6 +1708,76 @@ test_xrealm_keytab_xrealm() {
 	echo "krb5_keytab -X live parity completed successfully"
 }
 
+configure_xrealm_prestash() {
+	$CMD xrealm-a /bin/sh -c \
+	    'cat >/etc/krb5/krb5_admind.conf && chmod 600 /etc/krb5/krb5_admind.conf' <<EOM
+\$allow_fetch = 1;
+\$xrealm_bootstrap{"$XREALM_B"} = ["$XREALM_A"];
+\$prestash_xrealm{"$XREALM_A"} = ["$XREALM_B"];
+1;
+EOM
+	$CMD xrealm-a /bin/sh -c \
+	    'kill $(pidof krb5_admind) 2>/dev/null || true;
+	    kill $(pidof prefork) 2>/dev/null || true'
+}
+
+test_xrealm_prestashed_ticket() {
+	HOST=xrealm-client.example.com
+	PRINC=www-data@$XREALM_A
+	TICKET=/var/spool/tickets/@$XREALM_A/www-data
+	CERT=/var/spool/certs/@$XREALM_A/www-data
+	CERT_CCACHE=/tmp/xrealm-prestash-cert.ccache
+
+	echo "Testing cross-realm prestashed credentials"
+
+	configure_xrealm_prestash
+	$CMD xrealm-a bifrost -l modify_host "$HOST" realm="$XREALM_B"
+	if ! $CMD xrealm-a bifrost -l query "$PRINC" >/dev/null 2>&1; then
+		$CMD xrealm-a bifrost -l create_appid "$PRINC"
+	fi
+
+	if $CMD xrealm-client bifrost keytab -p root list | \
+	    grep -F "host/$HOST@$XREALM_A" >/dev/null; then
+		echo "xrealm client unexpectedly has an $XREALM_A host key" >&2
+		exit 1
+	fi
+	$CMD xrealm-client bifrost keytab -p root list | \
+	    grep -F "host/$HOST@$XREALM_B" >/dev/null
+
+	$CMD xrealm-a /cmd print-ca | $CMD xrealm-client /bin/sh -c \
+	    'mkdir -p /etc/krb5 && cat >/etc/krb5/ca-pub.pem'
+	$CMD xrealm-client /bin/sh -c \
+	    'cat >/etc/krb5/krb5_hostd.conf' <<'EOM'
+$tixdir = ['/var/spool/tickets'];
+$certdir = ['/var/spool/certs'];
+$use_fetch = 1;
+1;
+EOM
+	$CMD xrealm-client /bin/sh -c \
+	    ': >/etc/krb5/krb5_admind.conf;
+	    rm -rf /var/spool/tickets /var/spool/certs;
+	    mkdir -p /var/spool/tickets /var/spool/certs'
+
+	$CMD xrealm-a bifrost -l insert_ticket "$PRINC" "$HOST"
+	$CMD xrealm-client krb5_prestash fetch "$XREALM_A"
+
+	$CMD xrealm-client test -s "$TICKET" -a -s "$CERT"
+	$CMD xrealm-client /bin/sh -c \
+	    "test \"\$(readlink /var/spool/tickets/@$XREALM_B)\" = ."
+	$CMD xrealm-client su -s /bin/sh -c \
+	    "KRB5CCNAME=FILE:$TICKET klist | grep -F '$PRINC' >/dev/null &&
+	    KRB5CCNAME=FILE:$TICKET kgetcred '$XREALM_SERVICE' &&
+	    KRB5CCNAME=FILE:$TICKET klist | grep -F '$XREALM_SERVICE' >/dev/null" \
+	    www-data
+	$CMD xrealm-client su -s /bin/sh -c \
+	    "KRB5CCNAME=FILE:$CERT_CCACHE kdestroy >/dev/null 2>&1 || true;
+	    KRB5CCNAME=FILE:$CERT_CCACHE kinit -C 'PEM-FILE:$CERT' '$PRINC' &&
+	    KRB5CCNAME=FILE:$CERT_CCACHE klist | grep -F '$PRINC' >/dev/null" \
+	    www-data
+
+	echo "cross-realm prestashed credentials test completed successfully"
+}
+
 assert_kx509_realm_identity() {
 	BOX="$1"
 	REALM="$2"
@@ -1783,6 +1854,7 @@ test_xrealm_bifrost_package_trust() {
 	verify_xrealm_service_ticket "bifrost package" \
 	    "buser@$XREALM_B" "$BPASS" /tmp/xrealm-bifrost.ccache
 	test_xrealm_keytab_xrealm
+	test_xrealm_prestashed_ticket
 }
 
 test_xrealm_password_trust() {
