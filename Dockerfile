@@ -140,6 +140,8 @@ RUN    chmod 700 /scripts/asgard-rsync			\
 
 ENTRYPOINT ["/cmd"]
 
+FROM kdc AS asgard
+
 FROM kdc AS kdc-test
 
 COPY --from=krb5-admin-test-packages /test-pkgs-common /test-pkgs
