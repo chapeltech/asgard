@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -eu
+
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL \
+	https://repo.chapeltech.uk/keys/chapeltech-archive-keyring.gpg \
+	-o /etc/apt/keyrings/chapeltech-archive-keyring.gpg
+cat > /etc/apt/sources.list.d/chapeltech.sources <<'EOF'
+Types: deb
+URIs: https://repo.chapeltech.uk/debian
+Suites: trixie
+Components: main
+Signed-By: /etc/apt/keyrings/chapeltech-archive-keyring.gpg
+EOF
