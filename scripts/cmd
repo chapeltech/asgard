@@ -58,21 +58,16 @@ prepare() {
 	done
 
 	cp /var/heimdal/ca-pub.pem /etc/krb5
-	ln -sf ../var/heimdal/krb5.conf /etc/krb5.conf
 }
 
-mk_krb5_conf() {
-	REALM="$(cat /var/heimdal/realm)"
+mk_krb5_realm_conf() {
+	TYPE="$1"
+	REALM="$2"
 	MASTER="$(cat /var/heimdal/master)"
 
-	[ "$1" = master ] && MASTER=127.0.0.1
+	[ "$TYPE" = master ] && MASTER=127.0.0.1
 
 	cat <<EOM
-[libdefaults]
-	default_realm = $REALM
-	rdns = false
-	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
-
 [realms]
 	$REALM = {
 		kdc = $MASTER
@@ -82,18 +77,6 @@ EOM
 
 	cat <<EOM
 [kdc]
-	database = {
-		dbname = db:/var/heimdal/heimdal
-	}
-	require-preauth = yes
-	check-ticket-addresses = false
-	enable-pkinit = yes
-	allow-anonymous = yes
-	pkinit_anchors  = FILE:/etc/krb5/ca-pub.pem
-	pkinit_identity = FILE:/var/heimdal/kdc-priv.pem
-
-	enable_kx509 = yes
-
 	realms = {
 		$REALM = {
 			kx509 = {
@@ -114,11 +97,30 @@ EOM
 			}
 		}
 	}
-
-[logging]
-	kdc = 0-3/SYSLOG
 EOM
+}
 
+write_krb5_conf() {
+	DIR=/var/heimdal/krb5.conf.d
+	REALM="$(cat /var/heimdal/realm)"
+	REALMS="$REALM"
+
+	FILE="/var/heimdal/krb5.conf"
+	cat > "$FILE.new" <<EOM
+[libdefaults]
+	default_realm = $REALM
+
+includedir $DIR
+EOM
+	mv "$FILE.new" "$FILE"
+
+	mkdir -p "$DIR"
+	for R in $REALMS; do
+		FILE="$DIR/$(printf '%s\n' "$R" | tr . _).conf"
+
+		mk_krb5_realm_conf "$1" "$R" > "$FILE.new"
+		mv "$FILE.new" "$FILE"
+	done
 }
 
 create_admin() {
@@ -185,7 +187,7 @@ setup_master() {
 	echo "$REALM"	> /var/heimdal/realm
 	hostname	> /var/heimdal/master
 
-	mk_krb5_conf master > /var/heimdal/krb5.conf
+	write_krb5_conf master
 
 	kadmin -l init --realm-max-ticket-life=1d			\
 		       --realm-max-renewable-life=1w			\
@@ -239,7 +241,7 @@ setup_slave() {
 	echo "$REALM"	> /var/heimdal/realm
 	echo "$MASTER"	> /var/heimdal/master
 
-	mk_krb5_conf slave > /var/heimdal/krb5.conf
+	write_krb5_conf slave
 
 	krb5_keytab iprop
 
