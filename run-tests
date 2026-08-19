@@ -38,13 +38,15 @@ trap bail 0
 provision_host_krb5_conf() {
 	BOX="$1"
 
-	$CMD "$BOX" /bin/sh -c "cat >/etc/krb5.conf" < $krb5_conf
+	$CMD "$BOX" /bin/sh -c 'mkdir -p /etc/krb5 && cat >/etc/krb5.conf' \
+	    < $krb5_conf
 }
 
 provision_host_ca() {
 	BOX="$1"
 
-	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/ca-pub.pem' < $ca_pub
+	$CMD "$BOX" /bin/sh -c 'mkdir -p /etc/krb5 && cat >/etc/krb5/ca-pub.pem' \
+	    < $ca_pub
 }
 
 print_krb5_conf() {
