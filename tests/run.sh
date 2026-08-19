@@ -14,7 +14,8 @@ for test in							\
     /tests/admin-owners.sh					\
     /tests/admin-concurrency.sh				\
     /tests/bifrost-parity.sh					\
-    /tests/parity/manifest.sh
+    /tests/parity/manifest.sh					\
+    /tests/parity/krb5-admin-matrix.sh
 do
 	echo
 	echo "===== $test"
