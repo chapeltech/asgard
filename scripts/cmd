@@ -88,7 +88,7 @@ EOM
 	cat <<EOM
 [kdc]
 	database = {
-		dbname = db:/var/heimdal/heimdal.db
+		dbname = db:/var/heimdal/heimdal
 	}
 	require-preauth = yes
 	check-ticket-addresses = false
