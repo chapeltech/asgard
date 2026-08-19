@@ -1896,14 +1896,17 @@ test_windows_xrealm_prestash() {
 assert_kx509_realm_identity() {
 	BOX="$1"
 	REALM="$2"
+	HOST="$($CMD "$BOX" hostname)"
 	DN="DC=$(printf '%s' "$REALM" | sed 's/\./,DC=/g')"
+	CCACHE="FILE:/tmp/kx509-$REALM.ccache"
+	CERT="PEM-FILE:/tmp/kx509-$REALM.pem"
 
-	$CMD "$BOX" grep -F \
-	    "subject_name = CN=\${principal-name-without-realm},$DN" \
-	    /var/heimdal/krb5.conf >/dev/null
-	$CMD "$BOX" grep -F \
-	    "subject_name = CN=\${principal-host-name},$DN" \
-	    /var/heimdal/krb5.conf >/dev/null
+	$CMD "$BOX" env KRB5CCNAME="$CCACHE" \
+	    kinit -k "host/$HOST@$REALM"
+	$CMD "$BOX" env KRB5CCNAME="$CCACHE" \
+	    heimtools kx509 -o "$CERT"
+	$CMD "$BOX" hxtool print "$CERT" |
+	    grep -F "subject: \"CN=$HOST,$DN\"" >/dev/null
 }
 
 test_appliance_realm_identity() {
