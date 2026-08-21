@@ -142,6 +142,16 @@ local_realms() {
 	fi
 }
 
+create_bifrost_admins() {
+
+	[ -n "$(bifrost -l query_group bifrost-admins)" ] && return
+
+	krb5_admin -l create_group bifrost-admins owner=bifrost-admins
+	for VERB in bind_host create_user create_subject modify \
+	    principal_map_add sacls_add; do
+		krb5_admin -l sacls_add "$VERB" bifrost-admins
+	done
+}
 create_admin() {
 
 	[ $# -ne 1 ]	&& usage "create-user takes exactly one argument"
@@ -149,13 +159,10 @@ create_admin() {
 
 	REALM="$(cat /var/heimdal/realm)"
 	PRINCIPAL="$1@$REALM"
+	create_bifrost_admins
 	krb5_admin -l create_user "$PRINCIPAL"
 	krb5_admin -l create_subject "$PRINCIPAL" type=krb5
-	krb5_admin -l sacls_add bind_host "$PRINCIPAL"
-	krb5_admin -l sacls_add create_user "$PRINCIPAL"
-	krb5_admin -l sacls_add create_subject "$PRINCIPAL"
-	krb5_admin -l sacls_add modify "$PRINCIPAL"
-	krb5_admin -l sacls_add principal_map_add "$PRINCIPAL"
+	krb5_admin -l modify_group bifrost-admins "member+=$PRINCIPAL"
 }
 
 print_ca() {
@@ -238,6 +245,7 @@ setup_master() {
 	write_krb5_conf master
 
 	krb5_admin -l init_db
+	create_bifrost_admins
 	init_realm "$REALM"
 	bifrost -l create_realm "$REALM"
 
