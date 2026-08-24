@@ -64,15 +64,13 @@ docker compose exec kdc krb5_admin -l modify admin attributes-=needchange
 
 The first command prints the generated admin password.
 
-## Export Client Files
+## Export the CA Certificate
 
 ```sh
-docker compose exec kdc /cmd print-krb5-conf > krb5.conf
 docker compose exec kdc /cmd print-ca > ca-pub.pem
 ```
 
-Install `krb5.conf` on clients and make sure the hostname configured in
-`ASGARD_HOSTNAME` resolves to the Docker host.
+Install `ca-pub.pem` on clients.
 
 ## Operate
 

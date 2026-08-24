@@ -9,7 +9,6 @@ usage() {
 	  echo "usage:"
 	  echo "  docker run create-admin <USER>"
 	  echo "  docker run print-ca"
-	  echo "  docker run print-krb5-conf"
 	  echo "  docker run setup-master <REALM>"
 	  echo "  docker run setup-slave <REALM>"
 	  echo "  docker run shell"
@@ -81,10 +80,6 @@ mk_krb5_conf() {
 	}
 EOM
 
-	if [ "$1" != master -a "$1" != slave ]; then
-		return
-	fi
-
 	cat <<EOM
 [kdc]
 	database = {
@@ -146,15 +141,6 @@ print_ca() {
 	[ -f "$SETUP_FILE" ] || usage "KDC is not setup yet"
 
 	cat /var/heimdal/ca-pub.pem
-}
-
-print_krb5_conf() {
-
-	[ $# -gt 0 ]	&& usage "print-krb5-conf takes zero arguments"
-
-	[ -f "$SETUP_FILE" ] || usage "KDC is not setup yet"
-
-	mk_krb5_conf client
 }
 
 start_kdc() {
@@ -289,14 +275,9 @@ shift
 
 CMD=$(echo "$CMD" | sed s/_/-/g)
 
-#
-# XXXrcd:
-#		add cmds: get_krb5_conf, get_ca...
-
 case "$CMD" in
 	create-admin)		create_admin "$@"		;;
 	print-ca)		print_ca "$@"			;;
-	print-krb5-conf)	print_krb5_conf "$@"		;;
 	setup-master)		setup_master "$@"		;;
 	setup-slave)		setup_slave "$@"		;;
 	shell)			shell "$@"			;;

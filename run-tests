@@ -47,6 +47,24 @@ provision_host_ca() {
 	$CMD "$BOX" /bin/sh -c 'cat >/etc/krb5/ca-pub.pem' < $ca_pub
 }
 
+print_krb5_conf() {
+	REALM="$1"
+	KDC="$2"
+
+	cat <<EOM
+[libdefaults]
+	default_realm = $REALM
+	rdns = false
+	pkinit_anchors = FILE:/etc/krb5/ca-pub.pem
+
+[realms]
+	$REALM = {
+		kdc = $KDC
+		kpasswd_server = $KDC
+	}
+EOM
+}
+
 provision_host_hostd_conf() {
 	BOX="$1"
 
@@ -460,7 +478,7 @@ krb5_conf=$(add_tmpfile)
 ca_pub=$(add_tmpfile)
 passwd=$(add_tmpfile)
 
-$CMD kdc1 /cmd print-krb5-conf	> $krb5_conf
+print_krb5_conf EXAMPLE.COM kdc1.example.com > $krb5_conf
 $CMD kdc1 /cmd print-ca		> $ca_pub
 
 #
