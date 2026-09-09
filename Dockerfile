@@ -139,7 +139,9 @@ RUN    ln -sf /var/heimdal/master /etc/krb5		\
 	/var/heimdal/ca-pub.pem /etc/bifrost/		\
     && echo bifrost 3666/tcp >> /etc/services
 
-RUN    chmod 700 /scripts/asgard-rsync			\
+RUN    install -D -m 755 /scripts/asgard-activate-realm \
+	/usr/libexec/bifrost/activate-realm			\
+    && chmod 700 /scripts/asgard-rsync			\
     && echo krb5_admin_sync 4666/tcp >> /etc/services
 
 ENTRYPOINT ["/cmd"]

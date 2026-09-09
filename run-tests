@@ -2152,7 +2152,6 @@ test_single_appliance_multirealm_services() {
 	$DC restart multi-kdc
 	wait_for_xrealm_kdc multi-kdc "$MULTI_A"
 	$CMD multi-kdc bifrost -l create_realm "$MULTI_B"
-	$DC restart multi-kdc
 	wait_for_xrealm_kdc multi-kdc "$MULTI_B"
 	$CMD multi-kdc krb5_keytab -l | grep -F \
 	    "host/$MULTI_KDC@$MULTI_B" >/dev/null
