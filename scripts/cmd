@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -e
 
 SETUP_FILE=/var/heimdal/setup.done
 
@@ -272,8 +272,11 @@ setup_slave() {
 
 	write_krb5_conf slave
 
+	krb5_keytab
+	krb5_keytab krb5_admin
+	krb5_keytab HTTP
 	krb5_keytab iprop
-
+	ipropd-slave -1 -k FILE:/etc/krb5.keytab "$MASTER"
 	touch "$SETUP_FILE"
 }
 
