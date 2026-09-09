@@ -1,0 +1,110 @@
+realm_dn() {
+	printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/\./,DC=/g; s/^/DC=/'
+}
+
+realm_conf_name() {
+	printf '%s\n' "$1" | tr . _
+}
+
+mk_krb5_realm_conf() {
+	TYPE="$1"
+	REALM="$2"
+	MASTER="$(cat /var/heimdal/master)"
+
+	[ "$TYPE" = master ] && MASTER=127.0.0.1
+
+	cat <<EOM
+[realms]
+	$REALM = {
+		kdc = $MASTER
+		kpasswd_server = $MASTER
+	}
+
+[kdc]
+EOM
+
+	SN="CN=\${principal-name-without-realm},$(realm_dn "$REALM")"
+	HOST_SN="CN=\${principal-host-name},$(realm_dn "$REALM")"
+	cat <<EOM
+	realms = {
+		$REALM = {
+			kx509 = {
+				user = {
+					include_pkinit_san = true
+					subject_name = $SN
+					ekus = 1.3.6.1.5.5.7.3.2
+					ca = FILE:/var/heimdal/kx509-priv.pem
+				}
+				hostbased_service = {
+					HTTP = {
+						include_dnsname_san = true
+						subject_name = $HOST_SN
+						ekus = 1.3.6.1.5.5.7.3.1
+						ca = FILE:/var/heimdal/kx509-priv.pem
+					}
+					host = {
+						include_dnsname_san = true
+						include_pkinit_san = true
+						subject_name = $HOST_SN
+						ekus = 1.3.6.1.5.5.7.3.1
+						ekus = 1.3.6.1.5.5.7.3.2
+						ca = FILE:/var/heimdal/kx509-priv.pem
+					}
+				}
+			}
+		}
+	}
+EOM
+}
+
+local_realms() {
+	SETUP_FILE=${SETUP_FILE-/var/heimdal/setup.done}
+
+	if [ -f "$SETUP_FILE" ] && [ -s /var/heimdal/krb5_admin.db ]; then
+		bifrost -l search_realm kind=local
+	else
+		cat /var/heimdal/realm
+	fi
+}
+
+write_krb5_conf() {
+	DIR=/var/heimdal/krb5.conf.d
+	REALM="$(cat /var/heimdal/realm)"
+	REALMS="$(local_realms)"
+
+	FILE=/var/heimdal/krb5.conf
+	cat > "$FILE.new" <<EOM
+[libdefaults]
+	default_realm = $REALM
+
+includedir $DIR
+EOM
+	mv "$FILE.new" "$FILE"
+
+	mkdir -p "$DIR"
+	rm -f "$DIR"/*.conf
+	for R in $REALMS; do
+		FILE="$DIR/$(realm_conf_name "$R").conf"
+
+		mk_krb5_realm_conf "$1" "$R" > "$FILE.new"
+		mv "$FILE.new" "$FILE"
+	done
+}
+
+install_kdc_keytabs() {
+
+	for R in $(local_realms); do
+		krb5_keytab -Z "host@$R"
+		krb5_keytab -Z "krb5_admin@$R"
+		krb5_keytab -Z "HTTP@$R"
+		krb5_keytab -Z "iprop@$R"
+	done
+}
+
+reconcile_realms() {
+	TYPE=slave
+	[ "$(hostname)" = "$(cat /var/heimdal/master)" ] && TYPE=master
+
+	write_krb5_conf "$TYPE"
+	install_kdc_keytabs
+}
