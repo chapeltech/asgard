@@ -38,7 +38,7 @@ emit_config() {
 	emit_file /etc/krb5.conf
 	emit_cmd ls -l /etc/krb5
 	emit_cmd ls -l /var/heimdal
-	emit_cmd kadmin -l list \*
+	emit_cmd krb5_admin -l list \*
 	echo ------------------------------------------------------------
 }
 
@@ -189,11 +189,8 @@ setup_master() {
 
 	write_krb5_conf master
 
-	kadmin -l init --realm-max-ticket-life=1d			\
-		       --realm-max-renewable-life=1w			\
-							"$REALM"
-
 	krb5_admin -l init_db
+	init_realm "$REALM"
 
 	hxtool issue-certificate					\
 			--self-signed					\
@@ -227,6 +224,43 @@ setup_master() {
 	krb5_admin -l master > /etc/krb5/master
 
 	touch "$SETUP_FILE"
+}
+
+create_realm_principal() {
+	PRINCIPAL="$1"
+	MAX_LIFE="$2"
+	MAX_RENEWABLE_LIFE="$3"
+	shift 3
+
+	krb5_admin -l create "$PRINCIPAL"
+	krb5_admin -l modify "$PRINCIPAL" \
+	    max_life="$MAX_LIFE" max_renewable_life="$MAX_RENEWABLE_LIFE" \
+	    "$@"
+}
+
+init_realm() {
+	R="$1"
+
+	create_realm_principal "krbtgt/$R@$R" 1d 1w
+	create_realm_principal "kadmin/changepw@$R" 5m 5m \
+	    attributes-=allow_tgs_req \
+	    attributes+=password_changing_service \
+	    attributes-=allow_postdated \
+	    attributes-=allow_renewable \
+	    attributes-=allow_proxiable \
+	    attributes+=requires_preauth
+	create_realm_principal "WELLKNOWN/ANONYMOUS@$R" 1h 1h \
+	    attributes+=requires_preauth
+	create_realm_principal "WELLKNOWN/FEDERATED@$R" 1h 1h \
+	    attributes+=requires_preauth
+	if ! krb5_admin -l query \
+	    'WELLKNOWN/org.h5l.fast-cookie@WELLKNOWN:ORG.H5L' >/dev/null 2>&1; then
+		create_realm_principal \
+		    'WELLKNOWN/org.h5l.fast-cookie@WELLKNOWN:ORG.H5L' 1h 1h \
+		    attributes+=requires_preauth \
+		    attributes-=allow_tgs_req \
+		    attributes-=allow_tix
+	fi
 }
 
 setup_slave() {
