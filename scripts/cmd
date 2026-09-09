@@ -46,8 +46,6 @@ prepare() {
 
 	[ $debug -gt 0 ]	&& emit_config
 
-	mkdir -p /var/heimdal
-
 	#
 	# XXXrcd: for now, wait until we are setup---this is a hack,
 	#         later this will be done in a better way as we'll
@@ -56,8 +54,6 @@ prepare() {
 	while [ ! -f "$SETUP_FILE" ]; do
 		sleep 1;
 	done
-
-	cp /var/heimdal/ca-pub.pem /etc/krb5
 }
 
 mk_krb5_realm_conf() {

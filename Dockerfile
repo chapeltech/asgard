@@ -114,6 +114,7 @@ COPY scripts /scripts
 COPY scripts/cmd /cmd
 
 RUN    ln -sf /var/heimdal/master /etc/krb5		\
+    && ln -sf ../../var/heimdal/ca-pub.pem /etc/krb5/ca-pub.pem \
     && ln -sf heimdal /var/kerberos			\
     && echo bifrost 2666/tcp >> /etc/services		\
     && echo krb5_admin 3666/tcp >> /etc/services
