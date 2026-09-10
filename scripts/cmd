@@ -14,9 +14,10 @@ usage() {
 	  echo "  docker run setup-master <REALM>"
 	  echo "  docker run setup-slave <REALM> <MASTER>"
 	  echo "  docker run activate-slave"
-	  echo "  docker run reconcile"
+	  echo "  docker run approve-slave <REALM> <HOST> <BINDING>"
 	  echo "  docker run status"
 	  echo "  docker run bifrost <ARGS>"
+	  echo "  docker run reconcile"
 	  echo "  docker run shell"
 	  echo "  docker run start-kdc"
 	  echo "  docker run start-client"
@@ -100,12 +101,15 @@ prepare() {
 
 create_bifrost_admins() {
 
-	[ -n "$(bifrost -l query_group bifrost-admins)" ] && return
-
-	krb5_admin -l create_group bifrost-admins owner=bifrost-admins
+	if [ -z "$(bifrost -l query_group bifrost-admins)" ]; then
+		krb5_admin -l create_group bifrost-admins owner=bifrost-admins
+	fi
 	for VERB in bind_host create_user create_subject modify \
 	    principal_map_add sacls_add; do
-		krb5_admin -l sacls_add "$VERB" bifrost-admins
+		if ! krb5_admin -l sacls_query verb="$VERB" |
+		    grep -Fx bifrost-admins >/dev/null; then
+			krb5_admin -l sacls_add "$VERB" bifrost-admins
+		fi
 	done
 }
 create_admin() {
@@ -184,17 +188,30 @@ setup_master() {
 
 	cd /var/heimdal
 
-	[ -f "$SETUP_FILE" ] && usage "Realm is already setup, exiting..."
+	if [ -s /var/heimdal/realm ]; then
+		[ "$REALM" = "$(cat /var/heimdal/realm)" ] ||
+		    usage "KDC is already assigned to another realm"
+		[ "$(hostname)" = "$(cat /var/heimdal/master)" ] ||
+		    usage "KDC is configured as a slave"
+	fi
+	[ -f "$SETUP_FILE" ] && return
 
 	echo "$REALM"	> /var/heimdal/realm
 	hostname	> /var/heimdal/master
 
 	write_krb5_conf master
 
-	krb5_admin -l init_db
+	if [ "$(sqlite3 /var/heimdal/krb5_admin.db \
+	    "SELECT count(*) FROM sqlite_schema WHERE name = 'db_version'")" = 0 ]; then
+		krb5_admin -l init_db
+	fi
 	create_bifrost_admins
-	bifrost -l create_realm "$REALM"
-	bifrost -l create_host "$(hostname)" realm="$REALM"
+	if ! bifrost -l search_realm kind=local | grep -Fx "$REALM" >/dev/null; then
+		bifrost -l create_realm "$REALM"
+	fi
+	if [ -z "$(bifrost -l query_host "$(hostname)")" ]; then
+		bifrost -l create_host "$(hostname)" realm="$REALM"
+	fi
 	bifrost -l modify_realm "$REALM" \
 	    "kdc+=$(hostname)" "master=$(hostname)"
 
@@ -222,12 +239,38 @@ setup_master() {
 	touch "$SETUP_FILE"
 }
 
+approve_slave() {
+	[ $# -eq 3 ] || usage "approve-slave needs REALM HOST BINDING"
+	REALM="$1"
+	HOST="$2"
+	BINDING="$3"
+	[ -f "$SETUP_FILE" ] || usage "KDC is not setup yet"
+	[ "$(hostname)" = "$(cat /var/heimdal/master)" ] ||
+	    usage "slave approval must run on the master"
+	bifrost -J -l query_realm "$REALM" |
+	    jq -e --arg master "$(hostname)" \
+	    '.kind == "local" and .master == $master' >/dev/null
+	if [ -z "$(krb5_admin -l query_host "$HOST")" ]; then
+		krb5_admin -l create_host "$HOST" realm="$REALM"
+	fi
+	[ "$(krb5_admin -J -l query_host "$HOST" | jq -r .realm)" = "$REALM" ] ||
+	    usage "$HOST belongs to another realm"
+	krb5_admin -l bind_host "$HOST" "$BINDING"
+	bifrost -l modify_realm "$REALM" "kdc+=$HOST"
+	/scripts/asgard-certificates "$HOST" >/dev/null
+}
+
 setup_slave() {
 	REALM="$1"
 	MASTER="$2"
 
 	[ $# -ne 2 ] && usage "setup-slave needs two args, REALM and MASTER"
-	[ -f "$SETUP_FILE" ] && usage "Realm is already setup, exiting..."
+	if [ -f "$SETUP_FILE" ]; then
+		[ "$REALM" = "$(cat /var/heimdal/realm)" ] &&
+		    [ "$MASTER" = "$(cat /var/heimdal/master)" ] ||
+		    usage "KDC is already assigned to another realm or master"
+		return
+	fi
 
 	echo Setting up subservient KDC for REALM=$REALM >&2
 
@@ -310,6 +353,7 @@ case "$CMD" in
 	bifrost)		exec bifrost -l "$@"		;;
 	status)			exec /scripts/asgard-status "$@"	;;
 	reconcile)		reconcile "$@"			;;
+	approve-slave)		approve_slave "$@"		;;
 	activate-slave)		activate_slave "$@"		;;
 	create-admin)		create_admin "$@"		;;
 	print-ca)		print_ca "$@"			;;
