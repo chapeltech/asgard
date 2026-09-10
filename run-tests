@@ -345,8 +345,8 @@ test_kx509_certificate() {
 	echo "Testing kx509 certificate issuance for $PRINC on $BOX"
 
 	$CMD "$BOX" rm -f "$STORE"
-	$CMD "$BOX" heimtools kx509 -s
-	$CMD "$BOX" heimtools kx509 -o "PEM-FILE:$STORE"
+	$CMD "$BOX" kx509 kx509 -s
+	$CMD "$BOX" kx509 kx509 -o "PEM-FILE:$STORE"
 	$CMD "$BOX" test -s "$STORE"
 	$CMD "$BOX" hxtool print "PEM-FILE:$STORE" > "$PRINT"
 
