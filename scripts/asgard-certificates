@@ -1,0 +1,88 @@
+#!/bin/sh -e
+
+[ $# = 1 ] || { echo "usage: $0 HOST" >&2; exit 1; }
+HOST=$1
+case "$HOST" in
+''|.*|-*|*[!A-Za-z0-9.-]*)
+	echo "invalid KDC hostname: $HOST" >&2
+	exit 1
+	;;
+esac
+
+exec 3>&1 1>&2
+umask 077
+BASE=/var/heimdal/kdcs
+TARGET=$BASE/$HOST
+mkdir -p "$BASE"
+exec 9>"$BASE/.$HOST.lock"
+flock 9
+STAGE=$(mktemp -d "$BASE/.$HOST.XXXXXXXX")
+trap '[ -z "$STAGE" ] || rm -rf "$STAGE" "$STAGE.link"' EXIT
+trap 'exit 1' HUP INT TERM
+
+set -- kind=local
+if [ "$HOST" != "$(hostname)" ]; then
+	set -- "$@" "kdc=$HOST"
+fi
+REALMS=$(bifrost -l search_realm "$@")
+[ -n "$REALMS" ] || {
+	echo "no locally served realms" >&2
+	exit 1
+}
+printf '%s\n' "$REALMS" | LC_ALL=C sort -u > "$STAGE/realms"
+
+FUTURE=$(date -u -d '+30 days' +%Y-%m-%d)
+valid() {
+	dir=$1
+	for name in kdc kx509; do
+		hxtool verify --missing-revoke --time="$FUTURE" \
+		    "cert:FILE:$1/$name-priv.pem" \
+		    "chain:FILE:$1/$name-priv.pem" \
+		    anchor:FILE:/var/heimdal/ca-pub.pem >/dev/null || return 1
+		hxtool acert --cert-num=0 --has-private-key \
+		    "FILE:$1/$name-priv.pem" || return 1
+	done
+	set --
+	for R in $(cat "$dir/realms"); do
+		set -- "$@" "--has-pkinit-san=krbtgt/$R@$R"
+	done
+	hxtool acert --cert-num=0 "$@" "FILE:$dir/kdc-priv.pem"
+}
+
+if cmp -s "$STAGE/realms" "$TARGET/realms" && valid "$TARGET"; then
+	printf '%s\n' "$TARGET" >&3
+	exit 0
+fi
+
+echo "Issuing certificates for $HOST"
+set --
+for R in $(cat "$STAGE/realms"); do
+	set -- "$@" "--pk-init-principal=krbtgt/$R@$R"
+done
+hxtool issue-certificate \
+	--ca-certificate=FILE:/var/heimdal/ca-priv.pem \
+	--generate-key=rsa --type=pkinit-kdc \
+	--ku=digitalSignature --ku=keyEncipherment \
+	--subject="CN=$HOST" --lifetime=1year \
+	"$@" --certificate="FILE:$STAGE/kdc-priv.pem"
+hxtool issue-certificate \
+	--ca-certificate=FILE:/var/heimdal/ca-priv.pem \
+	--generate-key=rsa --issue-ca --path-length=0 \
+	--ku=keyCertSign --ku=cRLSign \
+	--subject="CN=$HOST kx509 issuer" --lifetime=1year \
+	--certificate="FILE:$STAGE/kx509-priv.pem"
+
+hxtool cc --no-private-keys /var/heimdal/ca-pub.pem "$STAGE/ca-pub.pem"
+for name in kdc kx509; do
+	hxtool cc --append "$STAGE/ca-pub.pem" "$STAGE/$name-priv.pem"
+	hxtool cc --no-private-keys "$STAGE/$name-priv.pem" \
+	    "$STAGE/$name-pub.pem"
+done
+rm "$STAGE/ca-pub.pem"
+valid "$STAGE"
+
+# Publish the complete generation, keeping previous generations intact.
+ln -s "$(basename "$STAGE")" "$STAGE.link"
+mv -Tf "$STAGE.link" "$TARGET"
+STAGE=
+printf '%s\n' "$TARGET" >&3

@@ -61,35 +61,57 @@ local_realms() {
 	SETUP_FILE=${SETUP_FILE-/var/heimdal/setup.done}
 
 	if [ -f "$SETUP_FILE" ] && [ -s /var/heimdal/krb5_admin.db ]; then
-		bifrost -l search_realm kind=local
+		set -- kind=local
+		if [ "$(hostname)" != "$(cat /var/heimdal/master)" ]; then
+			set -- "$@" "kdc=$(hostname)"
+		fi
+		bifrost -l search_realm "$@"
 	else
 		cat /var/heimdal/realm
 	fi
 }
 
-write_krb5_conf() {
+write_krb5_conf() (
 	DIR=/var/heimdal/krb5.conf.d
 	REALM="$(cat /var/heimdal/realm)"
 	REALMS="$(local_realms)"
+	mkdir -p "$DIR" /run/asgard
+	exec 8>/run/asgard/realms.lock
+	flock 8
+	TMP=$(mktemp -d "$DIR/.new.XXXXXX")
+	trap 'rm -rf "$TMP"' EXIT
+	trap 'exit 1' HUP INT TERM
 
-	FILE=/var/heimdal/krb5.conf
-	cat > "$FILE.new" <<EOM
+	cat > "$TMP/default" <<EOM
 [libdefaults]
 	default_realm = $REALM
 
 includedir $DIR
 EOM
-	mv "$FILE.new" "$FILE"
-
-	mkdir -p "$DIR"
-	rm -f "$DIR"/*.conf
 	for R in $REALMS; do
-		FILE="$DIR/$(realm_conf_name "$R").conf"
-
-		mk_krb5_realm_conf "$1" "$R" > "$FILE.new"
-		mv "$FILE.new" "$FILE"
+		mk_krb5_realm_conf "$1" "$R" > "$TMP/$(realm_conf_name "$R").conf"
 	done
-}
+
+	if ! cmp -s "$TMP/default" /var/heimdal/krb5.conf; then
+		mv "$TMP/default" /var/heimdal/krb5.conf
+		touch /run/asgard/realms.changed
+	fi
+	rm -f "$TMP/default"
+	for FILE in "$DIR"/*.conf; do
+		[ -f "$FILE" ] || continue
+		if [ ! -f "$TMP/${FILE##*/}" ]; then
+			rm "$FILE"
+			touch /run/asgard/realms.changed
+		fi
+	done
+	for FILE in "$TMP"/*.conf; do
+		[ -f "$FILE" ] || continue
+		if ! cmp -s "$FILE" "$DIR/${FILE##*/}"; then
+			mv "$FILE" "$DIR/${FILE##*/}"
+			touch /run/asgard/realms.changed
+		fi
+	done
+)
 
 install_kdc_keytabs() {
 

@@ -14,6 +14,7 @@ usage() {
 	  echo "  docker run setup-master <REALM>"
 	  echo "  docker run setup-slave <REALM> <MASTER>"
 	  echo "  docker run activate-slave"
+	  echo "  docker run reconcile"
 	  echo "  docker run shell"
 	  echo "  docker run start-kdc"
 	  echo "  docker run start-client"
@@ -48,12 +49,38 @@ emit_config() {
 configure_inetd() {
 
 	BIFROSTD="$(bifrost -l query_config bifrostd)"
+	cp /etc/inetd.conf /run/asgard/inetd.conf.old
 	if [ "$BIFROSTD" = 1 ]; then
 		sed -i 's/^#bifrost/bifrost/' /etc/inetd.conf
 	else
 		sed -i 's/^bifrost/#bifrost/' /etc/inetd.conf
 	fi
+	if ! cmp -s /etc/inetd.conf /run/asgard/inetd.conf.old; then
+		touch /run/asgard/inetd.changed
+	fi
 }
+
+reconcile() (
+	mkdir -p /run/asgard
+	exec 7>/run/asgard/reconcile.lock
+	flock 7
+	if [ "$(hostname)" = "$(cat /var/heimdal/master)" ]; then
+		/scripts/asgard-install-certificates \
+		    "$(/scripts/asgard-certificates "$(hostname)")"
+	fi
+	reconcile_realms
+	configure_inetd
+	[ -S /run/asgard/supervisor.sock ] || exit 0
+	if [ -f /run/asgard/realms.changed ] ||
+	    [ -f /run/asgard/certificates.changed ]; then
+		supervisorctl -c /etc/supervisord.conf restart kdc kpasswdd
+		rm -f /run/asgard/realms.changed /run/asgard/certificates.changed
+	fi
+	if [ -f /run/asgard/inetd.changed ]; then
+		supervisorctl -c /etc/supervisord.conf restart inetd
+		rm /run/asgard/inetd.changed
+	fi
+)
 
 prepare() {
 
@@ -106,6 +133,7 @@ start_kdc() {
 	[ $# -gt 0 ]	&& usage "start_kdc takes zero arguments"
 
 	prepare
+	mkdir -p /run/asgard
 	configure_inetd
 	export BIFROST_IPROP_ACL="$ASGARD_IPROP_ACL"
 	reconcile_realms
@@ -118,6 +146,8 @@ start_kdc() {
 		    -o PEM-FILE:/var/heimdal/bifrost-priv.pem
 		rm -f /run/asgard/bifrost.ccache
 	fi
+	rm -f /run/asgard/realms.changed /run/asgard/certificates.changed \
+	    /run/asgard/inetd.changed
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }
 
@@ -167,43 +197,17 @@ setup_master() {
 	    "kdc+=$(hostname)" "master=$(hostname)"
 
 	REALM_DN="$(realm_dn "$REALM")"
-	hxtool issue-certificate					\
-			--self-signed					\
-			--issue-ca					\
-			--generate-key=rsa				\
-			--subject="CN=CA,$REALM_DN"			\
-			--lifetime=20years				\
-			--certificate="FILE:ca-priv.pem"
+	if [ ! -s ca-priv.pem ]; then
+		hxtool issue-certificate \
+		    --self-signed --issue-ca --generate-key=rsa \
+		    --subject="CN=CA,$REALM_DN" --lifetime=20years \
+		    --certificate=FILE:ca-priv.pem.new
+		mv ca-priv.pem.new ca-priv.pem
+	fi
 
 	hxtool cc --no-private-keys ca-priv.pem ca-pub.pem
-
-	hxtool issue-certificate					\
-			--ca-certificate=FILE:ca-priv.pem		\
-			--generate-key=rsa				\
-			--issue-ca					\
-			--path-length=0				\
-			--type="pkinit-kdc"				\
-			--ku=keyEncipherment				\
-			--ku=digitalSignature				\
-			--ku=keyCertSign				\
-			--pk-init-principal="krbtgt/$REALM@$REALM"	\
-			--subject="uid=kdc,$REALM_DN"			\
-			--certificate="FILE:kdc-priv.pem"
-
-	hxtool cc --no-private-keys kdc-priv.pem kdc-pub.pem
-
-	hxtool issue-certificate					\
-			--ca-certificate=FILE:ca-priv.pem		\
-			--generate-key=rsa				\
-			--issue-ca					\
-			--path-length=0				\
-			--ku=keyCertSign				\
-			--ku=cRLSign					\
-			--subject="CN=kx509 issuer"			\
-			--certificate=FILE:kx509-priv.pem
-
-	hxtool cc --append ca-pub.pem kx509-priv.pem
-	hxtool cc --no-private-keys kx509-priv.pem kx509-pub.pem
+	/scripts/asgard-install-certificates \
+	    "$(/scripts/asgard-certificates "$(hostname)")"
 
 	hxtool issue-certificate					\
 			--ca-certificate=FILE:ca-priv.pem		\
@@ -286,6 +290,7 @@ shift
 CMD=$(echo "$CMD" | sed s/_/-/g)
 
 case "$CMD" in
+	reconcile)		reconcile "$@"			;;
 	activate-slave)		activate_slave "$@"		;;
 	create-admin)		create_admin "$@"		;;
 	print-ca)		print_ca "$@"			;;
