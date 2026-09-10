@@ -1,0 +1,50 @@
+#!/bin/sh -e
+
+[ $# = 1 ] || { echo "usage: $0 DIR" >&2; exit 1; }
+DIR=$(realpath -e "$1")
+exec 1>&2
+umask 077
+BASE=/var/heimdal
+mkdir -p /run/asgard
+exec 9>/run/asgard/certificates.lock
+flock 9
+STAGE=$(mktemp -d "$BASE/.certificates.XXXXXXXX")
+trap '[ -z "$STAGE" ] || rm -rf "$STAGE" "$STAGE.link"' EXIT
+trap 'exit 1' HUP INT TERM
+
+for name in kdc kx509; do
+	hxtool cc "$DIR/$name-priv.pem" "$STAGE/$name-priv.pem"
+	hxtool verify --missing-revoke \
+	    "cert:FILE:$STAGE/$name-priv.pem" \
+	    "chain:FILE:$STAGE/$name-priv.pem" \
+	    anchor:FILE:$BASE/ca-pub.pem
+	hxtool cc --no-private-keys "$STAGE/$name-priv.pem" \
+	    "$STAGE/$name-pub.pem"
+done
+hxtool acert --cert-num=0 --ca --has-private-key --has-ku=keyCertSign \
+	"FILE:$STAGE/kx509-priv.pem"
+
+[ -s "$DIR/realms" ] || { echo "missing realm membership"; exit 1; }
+set --
+for R in $(cat "$DIR/realms"); do
+	set -- "$@" "--has-pkinit-san=krbtgt/$R@$R"
+done
+hxtool acert --cert-num=0 --end-entity --has-private-key \
+	--has-eku=1.3.6.1.5.2.3.5 --has-ku=digitalSignature \
+	"$@" "FILE:$STAGE/kdc-priv.pem"
+
+CHANGED=0
+for name in kdc-priv kdc-pub kx509-priv kx509-pub; do
+	cmp -s "$STAGE/$name.pem" "$BASE/$name.pem" || CHANGED=1
+done
+[ "$CHANGED" = 1 ] || exit 0
+
+ln -s "$(basename "$STAGE")" "$STAGE.link"
+mv -Tf "$STAGE.link" "$BASE/certificates"
+DIR=$STAGE
+STAGE=
+for name in kdc-priv kdc-pub kx509-priv kx509-pub; do
+	ln -s "certificates/$name.pem" "$DIR/$name.link"
+	mv -Tf "$DIR/$name.link" "$BASE/$name.pem"
+done
+touch /run/asgard/certificates.changed

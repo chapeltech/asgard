@@ -1,29 +1,5 @@
 #!/bin/sh -e
 
-if [ $# -ne 1 ]; then
-	echo "usage: asgard-activate-realm REALM" >&2
-	exit 1
-fi
-
-. /scripts/asgard-realms
-
-reconcile_realms
-
-restart_program() {
-	PROGRAM="$1"
-	OLD="$(pidof "$PROGRAM" 2>/dev/null || :)"
-
-	[ -n "$OLD" ] || return
-	kill -TERM $OLD
-	for UNUSED in 1 2 3 4 5 6 7 8 9 10; do
-		NEW="$(pidof "$PROGRAM" 2>/dev/null || :)"
-		[ -n "$NEW" ] && [ "$NEW" != "$OLD" ] && return
-		sleep 1
-	done
-
-	echo "$PROGRAM did not restart" >&2
-	return 1
-}
-
-restart_program kdc
-restart_program kpasswdd
+[ $# -eq 1 ] || exit 2
+[ -f /var/heimdal/setup.done ] || exit 0
+exec /cmd reconcile

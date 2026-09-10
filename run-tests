@@ -1877,7 +1877,7 @@ assert_kx509_realm_identity() {
 	BOX="$1"
 	REALM="$2"
 	HOST="$($CMD "$BOX" hostname)"
-	DN="DC=$(printf '%s' "$REALM" | sed 's/\./,DC=/g')"
+	DN="DC=$(printf '%s' "$REALM" | tr 'A-Z' 'a-z' | sed 's/\./,DC=/g')"
 	CCACHE="FILE:/tmp/kx509-$REALM.ccache"
 	CERT="PEM-FILE:/tmp/kx509-$REALM.pem"
 
@@ -1892,15 +1892,15 @@ assert_kx509_realm_identity() {
 test_appliance_realm_identity() {
 	BOX="$1"
 	REALM="$2"
-	DN="DC=$(printf '%s' "$REALM" | sed 's/\./,DC=/g')"
+	DN="DC=$(printf '%s' "$REALM" | tr 'A-Z' 'a-z' | sed 's/\./,DC=/g')"
 	ADMIN="realm-admin@$REALM"
 
 	echo "Testing appliance identities for $REALM"
 
 	$CMD "$BOX" hxtool print PEM-FILE:/var/heimdal/ca-pub.pem |
 	    grep -F "subject: \"CN=CA,$DN\"" >/dev/null
-	$CMD "$BOX" hxtool print PEM-FILE:/var/heimdal/kdc-pub.pem |
-	    grep -F "subject: \"UID=kdc,$DN\"" >/dev/null
+	$CMD "$BOX" kinit -n -c "FILE:/tmp/anonymous-$REALM.ccache" \
+	    "@$REALM"
 	assert_kx509_realm_identity "$BOX" "$REALM"
 
 	$CMD "$BOX" /cmd create-admin realm-admin >/dev/null
