@@ -8,24 +8,66 @@ umask 077
 
 case "$1" in
 hourly)
-	dst="$SNAPS/hourly/$(date +%H)"
-	mkdir -p "$dst"
-	cp /var/heimdal/heimdal.db "$dst"
-	sqlite3 /var/heimdal/krb5_admin.db ".backup $dst/krb5_admin.db"
+	slot=$(date +%H)
+	src=
 	;;
 daily)
 	src="$SNAPS/hourly/00"
-	dst="$SNAPS/daily/$(date +%w)"
-	mkdir -p "$dst"
-	cp "$src/heimdal.db" "$src/krb5_admin.db" "$dst"
+	slot=$(date +%w)
 	;;
 weekly)
 	src="$SNAPS/daily/0"
-	dst="$SNAPS/weekly/$(date +%U)"
-	mkdir -p "$dst"
-	cp "$src/heimdal.db" "$src/krb5_admin.db" "$dst"
+	slot=$(date +%U)
 	;;
 *)
 	exit 2
 	;;
 esac
+
+period="$SNAPS/$1"
+dst="$period/$slot"
+mkdir -p "$period"
+exec 9>"$SNAPS/.lock"
+flock 0 <&9
+
+stage=
+cleanup() {
+	status=$1
+	trap - 0
+	if [ -n "$stage" ] &&
+	    [ "$(readlink "$dst" || :)" != "${stage##*/}" ]; then
+		rm -rf "$stage"
+	fi
+	rm -f "$dst.new" "$period/.last-success"
+	if [ "$status" -ne 0 ]; then
+		echo "asgard-snapshot: ${period##*/} failed (exit $status)" >&2
+	fi
+	exit "$status"
+}
+trap 'cleanup $?' 0
+trap 'cleanup 1' HUP INT TERM
+
+stage=$(mktemp -d "$period/.$slot.XXXXXX")
+if [ -z "$src" ]; then
+	bifrost -l backup_hdb "$stage/heimdal.db"
+	sqlite3 -readonly /var/heimdal/krb5_admin.db ".timeout 60000" \
+	    ".backup $stage/krb5_admin.db"
+else
+	if [ ! -f "$src/last-success" ] ||
+	    [ "$(date -r "$src/last-success" +%F)" != "$(date +%F)" ]; then
+		echo "asgard-snapshot: no current snapshot at $src" >&2
+		exit 1
+	fi
+	cp "$src/heimdal.db" "$src/krb5_admin.db" "$stage"
+fi
+test -s "$stage/heimdal.db"
+test -s "$stage/krb5_admin.db"
+date -Iseconds > "$stage/last-success"
+
+# Replacing a symlink publishes both databases together.
+old=$(readlink "$dst" || :)
+ln -sfT "${stage##*/}" "$dst.new"
+mv -Tf "$dst.new" "$dst"
+ln -sfT "$slot/last-success" "$period/.last-success"
+mv -Tf "$period/.last-success" "$period/last-success"
+[ -z "$old" ] || rm -rf "$period/$old"
