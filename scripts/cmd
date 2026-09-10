@@ -15,6 +15,8 @@ usage() {
 	  echo "  docker run setup-slave <REALM> <MASTER>"
 	  echo "  docker run activate-slave"
 	  echo "  docker run reconcile"
+	  echo "  docker run status"
+	  echo "  docker run bifrost <ARGS>"
 	  echo "  docker run shell"
 	  echo "  docker run start-kdc"
 	  echo "  docker run start-client"
@@ -283,19 +285,13 @@ activate_slave() {
 
 
 debug=0
-done=0
-
-args=`getopt d $*`	|| usage
-
-set -- $args
-while [ $# -gt 0 ]; do
-	case "$1" in
-		-d)	debug=$(expr $debug + 1)	;;
-		--)	done=1				;;
+while getopts d OPT; do
+	case "$OPT" in
+	d)	debug=$((debug + 1)) ;;
+	*)	usage ;;
 	esac
-	shift
-	[ "$done" = 1 ] && break
 done
+shift $((OPTIND - 1))
 
 if [ $debug -gt 0 ]; then
 	export KRB5_TRACE=0-$(expr $debug + 3)/SYSLOG
@@ -311,6 +307,8 @@ shift
 CMD=$(echo "$CMD" | sed s/_/-/g)
 
 case "$CMD" in
+	bifrost)		exec bifrost -l "$@"		;;
+	status)			exec /scripts/asgard-status "$@"	;;
 	reconcile)		reconcile "$@"			;;
 	activate-slave)		activate_slave "$@"		;;
 	create-admin)		create_admin "$@"		;;

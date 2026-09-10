@@ -1,0 +1,57 @@
+#!/bin/sh -e
+
+if [ ! -f /var/heimdal/setup.done ]; then
+	if [ -s /run/asgard/setup.status ]; then
+		cat /run/asgard/setup.status
+	elif [ -s /var/heimdal/realm ]; then
+		echo 'awaiting setup completion'
+	else
+		echo unconfigured
+	fi
+	exit 1
+fi
+
+supervisorctl -c /etc/supervisord.conf status \
+    kdc kpasswdd ipropd inetd asgard-admin-sync \
+    >/dev/null || { echo 'services are not running'; exit 1; }
+
+TMP=$(mktemp -d /run/asgard/status.XXXXXX)
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+REALM=$(cat /var/heimdal/realm)
+cat > "$TMP/krb5.conf" <<EOM
+[libdefaults]
+	default_realm = $REALM
+[realms]
+	$REALM = {
+		kdc = tcp/127.0.0.1
+	}
+EOM
+
+KRB5_CONFIG="$TMP/krb5.conf" KRB5CCNAME="FILE:$TMP/ccache" \
+    timeout 10 kinit -k "host/$(hostname)@$REALM"
+
+for CERT in kdc kx509; do
+	hxtool verify --missing-revoke \
+	    "cert:FILE:/var/heimdal/$CERT-priv.pem" \
+	    "chain:FILE:/var/heimdal/$CERT-priv.pem" \
+	    anchor:FILE:/var/heimdal/ca-pub.pem >/dev/null
+done
+
+FAILED=0
+for FILE in /var/heimdal/admin-sync/*.status; do
+	[ -f "$FILE" ] || continue
+	if grep -q ' failed' "$FILE"; then
+		printf '%s: ' "${FILE##*/}"
+		cat "$FILE"
+		FAILED=1
+	fi
+done
+if [ "$(hostname)" != "$(cat /var/heimdal/master)" ]; then
+	LAST=$(cat /var/heimdal/admin-sync.time)
+	if [ $(( $(date +%s) - LAST )) -gt 180 ]; then
+		echo 'administrative replication is more than three minutes behind'
+		FAILED=1
+	fi
+fi
+[ "$FAILED" = 0 ] || exit 1
+echo ready
