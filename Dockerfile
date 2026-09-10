@@ -178,7 +178,7 @@ RUN apt update -qq					\
 	systemd						\
 	openbsd-inetd					\
 	inetutils-syslogd				\
-	jq						\
+	jq rsync					\
 	dnsutils					\
 	nginx libnginx-mod-http-auth-spnego		\
 	openssh-server openssh-client			\

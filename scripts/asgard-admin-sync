@@ -8,24 +8,34 @@ TARGETS=/run/asgard/admin-sync-targets.$$
 TARGETS_RAW=$TARGETS.raw
 SERVICE=krb5_admin_sync
 MODULE=krb5_admin
+STATE=/var/heimdal/admin-sync
 
 cleanup() {
 	rm -f "$TARGETS" "$TARGETS_RAW"
 }
 
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 
 collect_targets() {
 	local_host=$1
+	failed=0
 
 	: > "$TARGETS_RAW"
-	for realm in $(bifrost -l search_realm kind=local); do
-		if ! policy=$(bifrost -J -l query_realm "$realm"); then
+	: > "$TARGETS"
+	realms=$(timeout -k 5 30 bifrost -l search_realm kind=local) ||
+	    return 1
+	for realm in $realms; do
+		if ! policy=$(timeout -k 5 30 bifrost -J -l query_realm "$realm"); then
 			echo "asgard-admin-sync: cannot query realm $realm" >&2
+			failed=1
 			continue
 		fi
 
-		master=$(printf '%s\n' "$policy" | jq -r '.master // empty')
+		if ! master=$(printf '%s\n' "$policy" | jq -r '.master // empty'); then
+			failed=1
+			continue
+		fi
 		if [ "$master" != "$local_host" ]; then
 			echo "asgard-admin-sync: $local_host is not master for $realm" >&2
 			continue
@@ -34,55 +44,90 @@ collect_targets() {
 		printf '%s\n' "$policy" |
 		    jq -r --arg realm "$realm" --arg local "$local_host" \
 		    '.kdc[] | select(. != $local) | [., $realm] | @tsv' \
-		    >> "$TARGETS_RAW"
+		    >> "$TARGETS_RAW" || failed=1
 	done
 
-	LC_ALL=C sort -u -k1,1 "$TARGETS_RAW" > "$TARGETS"
+	LC_ALL=C sort -u -k1,1 "$TARGETS_RAW" > "$TARGETS" || return 1
+	return "$failed"
 }
 
-sync_slave() {
+sync_slave() (
 	slave=$1
 	realm=$2
 	local_host=$3
+	case "$slave" in
+	''|*[!A-Za-z0-9.-]*)
+		echo "asgard-admin-sync: invalid destination $slave" >&2
+		exit 1
+		;;
+	esac
 	ccache=/run/asgard/krb5cc-admin-sync.$$.$slave
 	principal=iprop/$local_host@$realm
+	status=$STATE/push-$slave
 
 	rm -f "$ccache"
-	trap 'rm -f "$ccache"' EXIT HUP INT TERM
+	trap 'rm -f "$ccache"' EXIT
+	trap 'exit 1' HUP INT TERM
+	printf '%s running\n' "$(date +%s)" > "$status.status.new"
+	mv "$status.status.new" "$status.status"
 
-	if ! env KRB5CCNAME=FILE:"$ccache" \
-	    kinit -k -t FILE:/etc/krb5.keytab "$principal"; then
-		echo "asgard-admin-sync: cannot obtain credentials for $principal" >&2
-		return 1
-	fi
-
-	if ! env KRB5CCNAME=FILE:"$ccache" \
+	timeout -k 5 60 env KRB5CCNAME=FILE:"$ccache" \
 	    RSYNC_CONNECT_PROG="env KRB5CCNAME=FILE:$ccache knc iprop@%H $SERVICE" \
-	    rsync -a "$BACKUP" "$slave::$MODULE/krb5_admin.db"; then
-		echo "asgard-admin-sync: failed to synchronize $slave" >&2
-		return 1
+	    sh -ec '
+		certs=$(/scripts/asgard-certificates "$3")
+		kinit -k -t FILE:/etc/krb5.keytab "$1"
+		exec rsync --timeout=30 -a "$2" "$certs/kdc-priv.pem" \
+		    "$certs/kx509-priv.pem" "$certs/realms" "$4"
+	    ' admin-sync "$principal" "$BACKUP" \
+	    "$slave" "$slave::$MODULE/" > "$status.error" 2>&1
+	rc=$?
+	if [ "$rc" = 0 ]; then
+		date +%s > "$status.last-success.new"
+		mv "$status.last-success.new" "$status.last-success"
+		printf '%s transferred\n' "$(date +%s)" > "$status.status.new"
+	else
+		printf '%s failed %s\n' "$(date +%s)" "$rc" > "$status.status.new"
+		echo "asgard-admin-sync: $slave failed (exit $rc)" >&2
+		cat "$status.error" >&2
 	fi
-}
+	mv "$status.status.new" "$status.status"
+	exit "$rc"
+)
 
 sync_once() {
 	local_host=$1
 
-	if ! sqlite3 "$DB" ".timeout 60000" ".backup $BACKUP"; then
+	certs=$(timeout -k 5 60 /scripts/asgard-certificates "$local_host") ||
+	    return 1
+	timeout -k 5 30 /scripts/asgard-install-certificates "$certs" || return 1
+	if [ -f /run/asgard/certificates.changed ] &&
+	    [ -f /var/heimdal/setup.done ]; then
+		timeout -k 5 30 /cmd reconcile || return 1
+	fi
+
+	if ! timeout -k 5 60 sqlite3 -bail -readonly "$DB" \
+	    ".timeout 5000" ".backup $BACKUP"; then
 		echo "asgard-admin-sync: failed to back up $DB" >&2
 		return 1
 	fi
 
-	collect_targets "$local_host"
+	failed=0
+	collect_targets "$local_host" || failed=1
+	pids=
 	while IFS="$(printf '\t')" read -r slave realm; do
 		[ -n "$slave" ] || continue
 		sync_slave "$slave" "$realm" "$local_host" &
+		pids="$pids $!"
 	done < "$TARGETS"
-	wait
+	for pid in $pids; do
+		wait "$pid" || failed=1
+	done
+	return "$failed"
 }
 
-mkdir -p /run/asgard
-chmod 700 /run/asgard
 umask 077
+mkdir -p /run/asgard "$STATE"
+chmod 700 /run/asgard
 
 local_host=$(hostname)
 master=$(cat /var/heimdal/master)
@@ -93,5 +138,11 @@ fi
 
 while :; do
 	sleep 30
-	sync_once "$local_host" || true
+	if sync_once "$local_host" > "$STATE/push.error" 2>&1; then
+		printf '%s complete\n' "$(date +%s)" > "$STATE/push.status.new"
+	else
+		printf '%s failed\n' "$(date +%s)" > "$STATE/push.status.new"
+		cat "$STATE/push.error" >&2
+	fi
+	mv "$STATE/push.status.new" "$STATE/push.status"
 done

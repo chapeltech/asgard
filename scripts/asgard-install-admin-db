@@ -1,0 +1,31 @@
+#!/bin/sh -e
+
+DB=/var/heimdal/krb5_admin.db
+STAGE=/run/asgard/admin-sync-incoming
+INCOMING=$STAGE/krb5_admin.db.bak
+RECEIVED=/var/heimdal/admin-sync.time
+
+umask 077
+for file in krb5_admin.db.bak kdc-priv.pem kx509-priv.pem realms; do
+	if [ ! -f "$STAGE/$file" ] || [ -L "$STAGE/$file" ]; then
+		echo "asgard-install-admin-db: missing or invalid $file" >&2
+		exit 1
+	fi
+done
+[ "$(sqlite3 -bail -readonly "$INCOMING" 'PRAGMA integrity_check')" = ok ]
+sqlite3 -bail -readonly "$INCOMING" \
+    'SELECT name, realm FROM hosts LIMIT 0;
+     SELECT realm, host FROM realm_kdcs LIMIT 0;'
+policy=$(sqlite3 -bail -readonly "$INCOMING" \
+    "SELECT 'iprop/' || master || '@' || realm FROM realms WHERE kind = 'local'")
+[ -n "$policy" ]
+if [ ! -s "$RECEIVED" ]; then
+	printf '%s\n' "$policy" | grep -Fx \
+	    "iprop/$(cat /var/heimdal/master)@$(cat /var/heimdal/realm)" >/dev/null
+fi
+
+# Restore through SQLite so open WAL readers keep their existing snapshot.
+sqlite3 -bail "$DB" '.timeout 5000' ".restore $INCOMING"
+/scripts/asgard-install-certificates "$STAGE"
+date +%s > "$RECEIVED.new"
+mv "$RECEIVED.new" "$RECEIVED"
