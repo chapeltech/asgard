@@ -12,34 +12,20 @@ ghcr.io/chapeltech/asgard:latest
 This is the only published Asgard image. The client and other Docker stages
 exist only to build and test the appliance.
 
-Use the included compose file:
-
-```text
-docker-compose.yml
-```
-
-## Configure
-
-```sh
-export ASGARD_HOSTNAME=kdc.example.com
-```
-
-`ASGARD_HOSTNAME` must resolve to the Docker host from clients. Use real
-host naming, or add it to client `/etc/hosts`.
-
 ## First Start
 
-Start the appliance:
+Run `asgard` in a directory for the new KDC:
 
 ```sh
-docker compose up -d kdc
+asgard setup-master EXAMPLE.COM kdc.example.com
 ```
 
-Initialize the realm inside the running container:
+The script writes `docker-compose.yml`, starts the container, and initializes
+the realm. It requires Docker with the Compose plugin. The hostname defaults
+to the local fully qualified hostname when omitted.
 
-```sh
-docker compose exec kdc /cmd setup-master EXAMPLE.COM
-```
+The generated Compose project uses the published image, host networking, a
+persistent `/var/heimdal` volume, and `restart: unless-stopped`.
 
 `bifrostd` is disabled by default. To enable it after setup:
 
@@ -52,6 +38,31 @@ Use `bifrostd=0` to disable it. Set this on the master: it is stored in
 `krb5_admin.db` and replicated to slaves. Each KDC applies it on restart.
 
 The container starts its services after initialization completes.
+
+## Set Up a Slave
+
+Automated slave enrollment is pending Bifrost's remote `modify_realm`
+authorization support; the current daemon rejects that step with HTTP 403.
+
+On the new KDC host, obtain administrative Kerberos credentials for the realm
+and run:
+
+```sh
+asgard setup-slave EXAMPLE.COM
+```
+
+The command discovers the master, downloads the realm CA over the authenticated
+`krb5_admin` connection, creates `docker-compose.yml`, enrolls the host, and
+starts the slave. The local fully qualified hostname is used by default; pass
+it after the realm when it must be overridden:
+
+```sh
+asgard setup-slave EXAMPLE.COM slave.example.com
+```
+
+Slave enrollment requires the `krb5_admin`, `bifrost`, and `hxtool` client
+commands. The master must have Bifrost enabled for the realm membership update;
+CA retrieval and bootstrapping use `krb5_admind`.
 
 ## Create an Admin Principal
 
