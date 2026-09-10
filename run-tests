@@ -756,6 +756,8 @@ test_prestashed_tickets() {
 	    'klist -c FILE:/var/spool/tickets/www-data >/dev/null' www-data
 }
 
+/bin/sh tests/asgard.sh ./asgard
+
 docker buildx bake --allow=fs.read=../bifrost
 
 $DC down -v --remove-orphans
