@@ -1,27 +1,64 @@
 #!/bin/sh
 
 set -eu
+export PATH=/usr/lib/asgard/bin:/usr/lib/asgard/sbin:/usr/lib/asgard/libexec:$PATH
 
 MASTER=$(cat /var/heimdal/master)
 CREDS=${KNC_CREDS-}
-AUTHORIZED=0
+STATE=/var/heimdal/admin-sync
+INCOMING=/run/asgard/admin-sync-incoming
 
-if [ -s /var/heimdal/krb5_admin.db ]; then
-	REALMS=$(bifrost -l search_realm kind=local)
-else
-	REALMS=$(cat /var/heimdal/realm)
+umask 077
+mkdir -p "$STATE" "$INCOMING"
+chmod 700 /run/asgard "$INCOMING"
+exec 9> /run/asgard/admin-db.lock
+if ! flock -w 5 9; then
+	echo 'asgard-rsync: receiver is busy' >&2
+	exit 1
 fi
 
-for realm in $REALMS; do
-	if [ "$CREDS" = "iprop/$MASTER@$realm" ]; then
-		AUTHORIZED=1
-		break
+finish() {
+	rc=$?
+	if [ "$rc" != 0 ]; then
+		printf '%s failed %s %s\n' "$(date +%s)" "$stage" "$rc" \
+		    > "$STATE/receive.status.new"
+		echo "asgard-rsync: $stage failed (exit $rc)" >&3
+		cat "$STATE/receive.error" >&3
+	else
+		printf '%s applied\n' "$(date +%s)" > "$STATE/receive.status.new"
 	fi
-done
+	mv "$STATE/receive.status.new" "$STATE/receive.status"
+	rm -rf "$INCOMING"
+}
 
-if [ "$AUTHORIZED" != 1 ]; then
+stage=authorize
+exec 3>&2 2> "$STATE/receive.error"
+trap finish EXIT
+trap 'exit 1' HUP INT TERM
+
+if [ -s /var/heimdal/admin-sync.time ]; then
+	policy=$(timeout -k 5 30 sqlite3 -bail -readonly \
+	    /var/heimdal/krb5_admin.db \
+	    "SELECT 'iprop/' || master || '@' || realm FROM realms WHERE kind = 'local'")
+else
+	policy=iprop/$MASTER@$(cat /var/heimdal/realm)
+fi
+
+if [ -z "$CREDS" ] ||
+    ! printf '%s\n' "$policy" | grep -Fx -- "$CREDS" >/dev/null; then
 	echo "asgard-rsync: $CREDS is not authorized" >&2
 	exit 1
 fi
 
-exec /usr/bin/rsync --server --daemon --config=/etc/rsyncd.conf .
+stage=transfer
+rm -rf "$INCOMING"
+mkdir -m 700 "$INCOMING"
+printf '%s receiving\n' "$(date +%s)" > "$STATE/receive.status.new"
+mv "$STATE/receive.status.new" "$STATE/receive.status"
+timeout -k 5 60 /usr/bin/rsync --server --daemon --config=/etc/rsyncd.conf .
+stage=install
+timeout -k 5 60 /scripts/asgard-install-admin-db >&2
+if [ -f /var/heimdal/setup.done ]; then
+	stage=reconcile
+	timeout -k 5 30 /cmd reconcile >&2
+fi

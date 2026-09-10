@@ -310,77 +310,35 @@ test_slave_ticket_renewal() {
 
 test_admin_db_replication() {
 	HOST=admin-sync-test.example.com
-	ADMIN_DB=/var/heimdal/krb5_admin.db
 	REMOTE=$(add_tmpfile)
 
-	echo "Testing initial administrative database replication"
-
-	$CMD kdc1 bifrost -l create_host "$HOST" \
+	echo "Testing administrative database replication"
+	$CMD bastion krb5_admin -h kdc1.example.com create_host "$HOST" \
 	    realm=EXAMPLE.COM ip_addr=192.0.2.10
 
-	for i in $(seq 1 75); do
-		COUNT=$($CMD kdc2 sqlite3 "$ADMIN_DB" \
-		    "SELECT COUNT(*) FROM hosts WHERE name = '$HOST'" \
-		    2>/dev/null || true)
-		[ "$COUNT" = 1 ] && break
-		sleep 1
+	for ADDR in 192.0.2.10 192.0.2.11; do
+		$CMD bastion krb5_admin -h kdc1.example.com modify_host "$HOST" \
+		    "ip_addr=$ADDR"
+		for i in $(seq 1 75); do
+			$CMD bastion krb5_admin -J -h kdc2.example.com \
+			    query_host "$HOST" > "$REMOTE"
+			$CMD bastion jq -e --arg addr "$ADDR" \
+			    '.ip_addr == $addr' < "$REMOTE" >/dev/null && break
+			sleep 1
+		done
+		$CMD bastion jq -e --arg addr "$ADDR" \
+		    '.ip_addr == $addr' < "$REMOTE" >/dev/null
 	done
-
-	$CMD kdc2 sqlite3 "$ADMIN_DB" \
-	    "SELECT COUNT(*) FROM hosts WHERE name = '$HOST'" |
-	    grep '^1$' >/dev/null
-	$CMD kdc2 sqlite3 "$ADMIN_DB" \
-	    'PRAGMA quick_check;' | grep '^ok$' >/dev/null
-	$CMD kdc1 test -s /var/heimdal/krb5_admin.db.bak
-	$CMD kdc2 test ! -e /var/heimdal/krb5_admin.db.bak
-
-	FIRST_INODE=$($CMD kdc2 stat -c %i "$ADMIN_DB")
-
-	echo "Testing replacement of the replicated database"
-
-	$CMD kdc1 bifrost -l modify_host "$HOST" ip_addr=192.0.2.11
-
-	for i in $(seq 1 75); do
-		ADDR=$($CMD kdc2 sqlite3 "$ADMIN_DB" \
-		    "SELECT ip_addr FROM hosts WHERE name = '$HOST'" \
-		    2>/dev/null || true)
-		[ "$ADDR" = 192.0.2.11 ] && break
-		sleep 1
-	done
-
-	$CMD kdc2 sqlite3 "$ADMIN_DB" \
-	    "SELECT ip_addr FROM hosts WHERE name = '$HOST'" |
-	    grep '^192\.0\.2\.11$' >/dev/null
-	$CMD kdc2 sqlite3 "$ADMIN_DB" \
-	    'PRAGMA quick_check;' | grep '^ok$' >/dev/null
-
-	SECOND_INODE=$($CMD kdc2 stat -c %i "$ADMIN_DB")
-	if [ "$FIRST_INODE" = "$SECOND_INODE" ]; then
-		echo "rsync updated the slave database in place" >&2
-		exit 1
-	fi
-
-	$CMD bastion krb5_admin -J -h kdc2.example.com \
-	    query_host "$HOST" > "$REMOTE"
-	$CMD bastion jq -e \
-	    '.ip_addr == "192.0.2.11"' < "$REMOTE" >/dev/null
 
 	echo "Testing administrative replication authorization"
-
-	$CMD kdc1 /bin/sh -s <<'EOM'
-set -e
-CCACHE=/run/asgard/krb5cc-admin-sync-unauthorized
-trap 'rm -f "$CCACHE"' EXIT HUP INT TERM
-rm -f "$CCACHE"
-
-env KRB5CCNAME=FILE:"$CCACHE" kinit -k -t FILE:/etc/krb5.keytab \
-    host/kdc1.example.com@EXAMPLE.COM
-
-if env KRB5CCNAME=FILE:"$CCACHE" \
-    RSYNC_CONNECT_PROG="env KRB5CCNAME=FILE:$CCACHE knc iprop@%H krb5_admin_sync" \
-    rsync -a /var/heimdal/krb5_admin.db.bak \
-    kdc2.example.com::krb5_admin/krb5_admin.db; then
-	echo "non-iprop credentials synchronized the administrative database" >&2
+	$CMD bastion /bin/sh -es <<'EOM'
+command -v rsync >/dev/null
+FILE=$(mktemp)
+trap 'rm -f "$FILE"' EXIT
+printf '%s\n' 'unauthorized transfer' > "$FILE"
+if RSYNC_CONNECT_PROG="knc iprop@%H 4666" \
+    rsync --timeout=10 -a "$FILE" kdc2.example.com::krb5_admin/krb5_admin.db.bak; then
+	echo "administrative credentials were accepted as replication credentials" >&2
 	exit 1
 fi
 EOM

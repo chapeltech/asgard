@@ -250,14 +250,35 @@ activate_slave() {
 	[ -s "/var/heimdal/krb5.conf.d/$CONF.conf" ] ||
 	    usage "slave has no realm configuration"
 	[ -s /var/heimdal/ca-pub.pem ] || usage "slave has no CA certificate"
+	[ -f "$SETUP_FILE" ] && return
+	mkdir -p /run/asgard
+	exec 9>/run/asgard/activate.lock
+	flock -n 9 || usage "slave activation is already running"
 
 	MASTER="$(cat /var/heimdal/master)"
+	echo 'acquiring KDC keys' > /run/asgard/setup.status
 	krb5_keytab
 	krb5_keytab krb5_admin
 	krb5_keytab HTTP
 	krb5_keytab iprop
+	echo 'receiving full HDB propagation' > /run/asgard/setup.status
 	ipropd-slave -1 -k FILE:/etc/krb5.keytab "$MASTER"
+	echo 'receiving administrative policy and certificates' > /run/asgard/setup.status
+	timeout -k 5 180 knc -lf krb5_admin_sync /scripts/asgard-rsync &
+	RECEIVER=$!
+	trap 'kill "$RECEIVER" 2>/dev/null || :; wait "$RECEIVER" 2>/dev/null || :' EXIT
+	trap 'exit 1' HUP INT TERM
+	while [ ! -s /var/heimdal/admin-sync.time ]; do
+		kill -0 "$RECEIVER" 2>/dev/null ||
+		    usage "initial administrative replication did not complete; retry activation"
+		sleep 1
+	done
+	kill "$RECEIVER" 2>/dev/null || :
+	wait "$RECEIVER" 2>/dev/null || :
+	trap - EXIT HUP INT TERM
+	reconcile_realms
 	touch "$SETUP_FILE"
+	rm -f /run/asgard/setup.status
 }
 
 
