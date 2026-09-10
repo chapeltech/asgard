@@ -2168,6 +2168,7 @@ else
 	    --allow=fs.read=../bifrost \
 	    --allow=fs.read=../krb5_admin test
 fi
+/bin/sh tests/appliance.sh asgard/kdc asgard/client
 build_redhat_images
 build_public_rpm_image
 
@@ -2243,8 +2244,7 @@ $CMD bastion krb5_admin -M -r EXAMPLE.COM print_ca > "$slave_ca"
 cmp "$ca_pub" "$slave_ca"
 
 BOOT=$($CMD kdc2 /cmd setup-slave EXAMPLE.COM kdc1.example.com < "$slave_ca")
-$CMD bastion bifrost bind_host kdc2.example.com "$BOOT"
-$CMD kdc1 bifrost -l modify_realm EXAMPLE.COM kdc+=kdc2.example.com
+$CMD kdc1 /cmd approve-slave EXAMPLE.COM kdc2.example.com "$BOOT"
 if $CMD bastion perl -MIO::Socket::INET -e '
     exit !IO::Socket::INET->new(
         PeerAddr => "kdc2.example.com", PeerPort => 88, Timeout => 1);'; then

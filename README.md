@@ -30,7 +30,7 @@ persistent `/var/heimdal` volume, and `restart: unless-stopped`.
 `bifrostd` is disabled by default. To enable it after setup:
 
 ```sh
-docker compose exec kdc bifrost -l modify_config bifrostd=1
+asgard bifrost modify_config bifrostd=1
 docker compose restart kdc
 ```
 
@@ -41,9 +41,6 @@ The container starts its services after initialization completes.
 
 ## Set Up a Slave
 
-Automated slave enrollment is pending Bifrost's remote `modify_realm`
-authorization support; the current daemon rejects that step with HTTP 403.
-
 On the new KDC host, obtain administrative Kerberos credentials for the realm
 and run:
 
@@ -52,36 +49,60 @@ asgard setup-slave EXAMPLE.COM
 ```
 
 The command discovers the master, downloads the realm CA over the authenticated
-`krb5_admin` connection, creates `docker-compose.yml`, enrolls the host, and
-starts the slave. The local fully qualified hostname is used by default; pass
-it after the realm when it must be overridden:
+`krb5_admin` connection, creates `docker-compose.yml`, and prepares enrollment.
+It prints an approval command containing the new host's bootstrap binding. Run
+that command in the master's Asgard directory:
+
+```sh
+asgard approve-slave EXAMPLE.COM slave.example.com BINDING
+```
+
+Then repeat `asgard setup-slave EXAMPLE.COM` on the new host. It obtains the KDC
+service keys, receives full Kerberos and administrative database propagation,
+and installs its PKINIT and KX509 identities before starting Kerberos. The
+master retains the root CA private key. No keytabs are copied between KDCs.
+
+The local fully qualified hostname is used by default; pass it after the realm
+when it must be overridden:
 
 ```sh
 asgard setup-slave EXAMPLE.COM slave.example.com
 ```
 
-Slave enrollment requires the `krb5_admin`, `bifrost`, and `hxtool` client
-commands. The master must have Bifrost enabled for the realm membership update;
-CA retrieval and bootstrapping use `krb5_admind`.
+Slave enrollment requires the `krb5_admin`, `klist`, and `hxtool` client commands.
+It does not require the Bifrost HTTPS listener. Setup can be retried after a
+failed activation; a successful command reports that the local KDC is ready.
 
 ## Create an Admin Principal
 
 ```sh
-docker compose exec kdc /cmd create-admin admin
-docker compose exec kdc krb5_admin -l modify admin attributes-=needchange
+asgard create-admin admin
 ```
 
-The first command prints the generated admin password.
+The command prints the generated admin password. Run `kinit admin@EXAMPLE.COM`
+on the administrative client and complete its initial password-change prompt.
 
 ## Export the CA Certificate
 
 ```sh
-docker compose exec kdc /cmd print-ca > ca-pub.pem
+asgard print-ca > ca-pub.pem
 ```
 
 Install `ca-pub.pem` on clients.
 
 ## Operate
+
+Check readiness:
+
+```sh
+asgard status
+```
+
+Advanced local administration is available without opening a shell:
+
+```sh
+asgard bifrost query_realm EXAMPLE.COM
+```
 
 View logs:
 
