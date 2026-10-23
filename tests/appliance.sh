@@ -8,6 +8,10 @@ if [ "${1:-}" != --driver ]; then
 	[ "$#" -le 2 ] || exit 2
 	KDC_IMAGE=${1:-asgard/kdc}
 	CLIENT_IMAGE=${2:-asgard/client}
+	# Container recreation must use the same build even if a tag moves mid-test.
+	KDC_IMAGE=$(docker image inspect --format '{{.Id}}' "$KDC_IMAGE")
+	CLIENT_IMAGE=$(docker image inspect --format '{{.Id}}' "$CLIENT_IMAGE")
+	printf 'Appliance images: KDC=%s CLIENT=%s\n' "$KDC_IMAGE" "$CLIENT_IMAGE"
 	ROOT=$(cd "$(dirname "$0")/.." && pwd)
 	DOCKER=$(command -v docker)
 	DOCKER=$(readlink -f "$DOCKER")
@@ -25,6 +29,7 @@ if [ "${1:-}" != --driver ]; then
 	WORK=$(mktemp -d /tmp/asgard-appliance.XXXXXX)
 	NETWORK=$(basename "$WORK" | tr '[:upper:].' '[:lower:]-')
 	DRIVER=$NETWORK-driver
+	CLIENT=$NETWORK-client
 	NETWORK_CREATED=0
 	DRIVER_CREATED=0
 
@@ -32,6 +37,10 @@ if [ "${1:-}" != --driver ]; then
 		RC=$?
 		trap - EXIT HUP INT TERM
 		set +e
+		if docker container inspect "$CLIENT" >/dev/null 2>&1; then
+			[ "$RC" = 0 ] || docker logs "$CLIENT" >&2
+			docker rm -f "$CLIENT" >/dev/null
+		fi
 		for NODE in master slave; do
 			[ -f "$WORK/$NODE/docker-compose.yml" ] || continue
 			if [ "$RC" != 0 ]; then
@@ -61,14 +70,15 @@ if [ "${1:-}" != --driver ]; then
 	    -v "$ROOT:/src:ro" -v "$WORK:$WORK" \
 	    --entrypoint /bin/sleep "$CLIENT_IMAGE" infinity >/dev/null
 	DRIVER_CREATED=1
-	docker exec "$DRIVER" timeout 600 /bin/sh /src/tests/appliance.sh \
-	    --driver "$WORK" "$NETWORK" "$KDC_IMAGE"
+	docker exec "$DRIVER" timeout 900 /bin/sh /src/tests/appliance.sh \
+	    --driver "$WORK" "$NETWORK" "$KDC_IMAGE" "$CLIENT_IMAGE"
 	exit 0
 fi
 
 WORK=$2
 NETWORK=$3
 KDC_IMAGE=$4
+CLIENT_IMAGE=$5
 REALM=APPLIANCE.EXAMPLE
 MASTER=kdc1.appliance.example
 SLAVE=kdc2.appliance.example
@@ -165,8 +175,16 @@ cd "$WORK/slave"
 "$ASGARD" setup-slave "$REALM" "$SLAVE"
 test ! -e .asgard-bootstrap-binding
 
+# The worker tests use only appliance commands and action-query APIs on KDCs.
+( . /src/tests/appliance-actions.sh )
+
 for PASS in initial recreated; do
 	if [ "$PASS" = recreated ]; then
+		(
+			cd "$WORK/master"
+			docker compose up -d --force-recreate
+			"$ASGARD" setup-master "$REALM" "$MASTER"
+		)
 		docker compose up -d --force-recreate
 		"$ASGARD" setup-slave "$REALM" "$SLAVE"
 	fi
@@ -178,6 +196,18 @@ for PASS in initial recreated; do
 	kgetcred "host/$SLAVE@$REALM"
 	kinit -R
 	klist
+	IPROP_PRINCIPAL=iprop-$PASS@$REALM
+	(
+		cd "$WORK/master"
+		"$ASGARD" bifrost create "$IPROP_PRINCIPAL"
+	)
+	for _ in $(seq 1 30); do
+		if kgetcred "$IPROP_PRINCIPAL"; then
+			break
+		fi
+		sleep 1
+	done
+	kgetcred "$IPROP_PRINCIPAL"
 	krb5_admin -J -h "$SLAVE" query_subject "before-enrollment@$REALM" \
 	    > "$WORK/subject.json"
 	jq -e '.type == "krb5"' "$WORK/subject.json"

@@ -154,6 +154,9 @@ start_kdc() {
 	fi
 	rm -f /run/asgard/realms.changed /run/asgard/certificates.changed \
 	    /run/asgard/inetd.changed
+	if [ "$(hostname)" = "$(cat /var/heimdal/master)" ]; then
+		rm -f "$ASGARD_IPROP_ACL"
+	fi
 	exec /usr/bin/tini -- /usr/bin/supervisord -c /etc/supervisord.conf
 }
 

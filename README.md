@@ -37,7 +37,10 @@ docker compose restart kdc
 Use `bifrostd=0` to disable it. Set this on the master: it is stored in
 `krb5_admin.db` and replicated to slaves. Each KDC applies it on restart.
 
-The container starts its services after initialization completes.
+The container starts its services after initialization completes. Supervisor
+runs `bifrost actiond` independently of the optional HTTPS listener, on the
+master only. Slaves do not process the master's replicated action queue.
+Master iprop waits for the worker to publish its initial replication ACL.
 
 ## Set Up a Slave
 
@@ -104,6 +107,28 @@ Advanced local administration is available without opening a shell:
 asgard bifrost query_realm EXAMPLE.COM
 ```
 
+Administrative changes queue their side effects and return without waiting for
+delivery. The action worker starts immediately, checks idle work every five
+seconds, and retries failed actions after sixty seconds. Prestash notifications
+use the client's normal KNC `krb5_host` service, not HTTPS.
+
+Inspect queued or failed work through the action API:
+
+```sh
+asgard bifrost list_actions state=failed
+asgard bifrost query_action ACTION_ID
+asgard bifrost retry_action ACTION_ID
+```
+
+`asgard status` requires the worker on the master, but not on slaves. A failed
+delivery remains visible in the action API even while the worker is running.
+Restarting the worker drains existing work without another administrative
+change:
+
+```sh
+docker compose exec -T kdc supervisorctl -c /etc/supervisord.conf restart asgard-actiond
+```
+
 View logs:
 
 ```sh
@@ -130,3 +155,8 @@ docker compose down
 
 The initialized realm remains in the `kdc` named volume when the container is
 removed.  `docker compose down -v` removes that volume and its realm state.
+
+## Tests
+
+See [tests/README.md](tests/README.md) for focused service and appliance tests
+using already-built images.

@@ -989,7 +989,7 @@ wait_for_prestashed_material() {
 	BOX="$1"
 	USER="$2"
 
-	for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+	for i in $(seq 1 180); do
 		if $CMD "$BOX" test -s "/var/spool/tickets/$USER" \
 		    -a -s "/var/spool/certs/$USER"; then
 			verify_prestashed_material "$BOX" "$USER"
@@ -1288,9 +1288,11 @@ dns_host() {
 }
 
 wait_for_dns() {
-	for i in 1 2 3 4 5 6 7 8 9 10; do
+	for i in $(seq 1 120); do
 		if $CMD kdc1 dig @127.0.0.1 example.com SOA +short |
-		    grep 'kdc1.example.com.' >/dev/null; then
+		    grep 'kdc1.example.com.' >/dev/null &&
+		    $CMD kdc1 dig @127.0.0.1 _dmarc.example.com TXT +short |
+		    grep 'p=reject; rua=mailto:dmarc@example.com' >/dev/null; then
 			return
 		fi
 		sleep 1
@@ -1374,9 +1376,20 @@ test_asgard_dns() {
 		COUNT=$($CMD kdc1 bifrost -l query_domain example.com | \
 		    grep -c '^dnssec_ksk_dnskey:')
 		[ "$COUNT" -ge 2 ]
-		COUNT=$($CMD bastion dig @172.30.0.11 +short example.com DNSKEY | \
-		    grep -c '^257 3 13 ')
+		for i in $(seq 1 120); do
+			COUNT=$($CMD bastion dig @172.30.0.11 +short \
+			    example.com DNSKEY | grep -c '^257 3 13 ')
+			[ "$COUNT" -ge 2 ] && break
+			sleep 1
+		done
 		[ "$COUNT" -ge 2 ]
+		for i in $(seq 1 120); do
+			$CMD kdc1 bifrost -l list_actions \
+			    action_type=check_dnssec_ksk_rollover \
+			    target_name=example.com | \
+			    grep 'parent DS.*not visible' >/dev/null && break
+			sleep 1
+		done
 		$CMD kdc1 bifrost -l list_actions \
 		    action_type=check_dnssec_ksk_rollover \
 		    target_name=example.com | \
@@ -2171,6 +2184,9 @@ fi
 /bin/sh tests/appliance.sh asgard/kdc asgard/client
 build_redhat_images
 build_public_rpm_image
+if [ "$PUBLIC_RPM" = 1 ]; then
+	/bin/sh tests/action-queue.sh asgard/kdc asgard/client asgard/rocky96-public
+fi
 
 $DC down -v --remove-orphans
 $DC up   -d --remove-orphans

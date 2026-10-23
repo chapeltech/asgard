@@ -1,0 +1,13 @@
+#!/bin/sh -e
+
+while [ ! -f /var/heimdal/setup.done ]; do
+	sleep 1
+done
+
+local_host=$(hostname)
+master=$(cat /var/heimdal/master)
+if [ "$local_host" != "$master" ]; then
+	exec sleep infinity
+fi
+
+exec bifrost actiond

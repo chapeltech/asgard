@@ -1,9 +1,13 @@
-#!/bin/sh
+#!/bin/sh -e
 
 MASTER="$(cat /etc/krb5/master)"
 
 if [ "$(hostname)" = "$MASTER" ]; then
-	ipropd-master
+	# An empty ACL is valid; its creation marks the worker's first pass.
+	while [ ! -f /run/asgard/iprop-acl ]; do
+		sleep 1
+	done
+	exec ipropd-master
 else
-	ipropd-slave -k FILE:/etc/krb5.keytab "$MASTER"
+	exec ipropd-slave -k FILE:/etc/krb5.keytab "$MASTER"
 fi

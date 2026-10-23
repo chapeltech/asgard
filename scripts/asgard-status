@@ -11,8 +11,15 @@ if [ ! -f /var/heimdal/setup.done ]; then
 	exit 1
 fi
 
-supervisorctl -c /etc/supervisord.conf status \
-    kdc kpasswdd ipropd inetd asgard-admin-sync \
+HOST=$(hostname)
+MASTER=$(cat /var/heimdal/master)
+set -- kdc kpasswdd ipropd inetd asgard-admin-sync
+if [ "$HOST" = "$MASTER" ]; then
+	set -- "$@" asgard-actiond
+	[ -f /run/asgard/iprop-acl ] ||
+	    { echo 'replication ACL is not ready'; exit 1; }
+fi
+supervisorctl -c /etc/supervisord.conf status "$@" \
     >/dev/null || { echo 'services are not running'; exit 1; }
 
 TMP=$(mktemp -d /run/asgard/status.XXXXXX)
@@ -28,7 +35,7 @@ cat > "$TMP/krb5.conf" <<EOM
 EOM
 
 KRB5_CONFIG="$TMP/krb5.conf" KRB5CCNAME="FILE:$TMP/ccache" \
-    timeout 10 kinit -k "host/$(hostname)@$REALM"
+    timeout 10 kinit -k "host/$HOST@$REALM"
 
 for CERT in kdc kx509; do
 	hxtool verify --missing-revoke \
@@ -39,7 +46,7 @@ done
 
 FAILED=0
 STATUS=/var/heimdal/admin-sync/push.status
-if [ "$(hostname)" != "$(cat /var/heimdal/master)" ]; then
+if [ "$HOST" != "$MASTER" ]; then
 	STATUS=/var/heimdal/admin-sync/receive.status
 	LAST=$(cat /var/heimdal/admin-sync.time)
 	if [ $(( $(date +%s) - LAST )) -gt 180 ]; then
